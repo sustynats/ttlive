@@ -36,6 +36,27 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "board_store.sqlite3"
 APP_BASE_URL = "https://ttlivechat.streamlit.app/"
 
+SCORE_TOOLTIPS = {
+    "Diskurskultur": "Misst, wie respektvoll und konstruktiv die Kommunikation verläuft. -3 = stark toxisch, dominant oder abwertend. +3 = respektvoll, vielfältig und dialogorientiert.",
+    "Salienz-Bewusstsein": "Zeigt, ob Aufmerksamkeit verzerrt wird. -3 = wenige laute Stimmen oder Trigger dominieren. +3 = ausgewogene Aufmerksamkeit und Themenvielfalt.",
+    "Verantwortung & Macht": "Misst, wie verantwortungsvoll Einfluss und Bühne wirken. -3 = Eskalation, Manipulation oder problematische Verstärkung. +3 = verantwortungsvolle Kommunikation und klare Begrenzung destruktiver Dynamiken.",
+    "Systemischer Impact": "Beschreibt die Wirkung auf den Gesamtdiskurs. -3 = Spaltung, Eskalation oder Verzerrung. +3 = Stabilisierung, Einordnung und gesellschaftlich konstruktive Wirkung.",
+    "Emotionale Resonanz": "Erfasst die Qualität der emotionalen Dynamik. -3 = Hass, Aggression oder Unsicherheit. +3 = Verbindung, Sicherheit, Empathie und konstruktive Resonanz.",
+}
+
+GLOBAL_TOOLTIPS = {
+    "shift_score": "Kombinierter Auffälligkeitswert pro User. Berücksichtigt Aktivität, Triggerbegriffe, Wiederholungen, Frage-Druck, Capslock und abwertende Marker. Hohe Werte bedeuten überproportionalen Einfluss auf den Diskurs - nicht automatisch Manipulation.",
+    "rollen": "Heuristische Einordnung auf Basis von Kommunikationsmustern. Dient zur Orientierung, nicht zur Bewertung von Personen.",
+    "trigger": "Begriffe oder Formulierungen, die typischerweise emotionale Reaktionen, Polarisierung oder Aufmerksamkeitsverschiebung auslösen.",
+    "toxisch": "Erkannt über sprachliche Marker wie Beleidigungen oder aggressive Formulierungen. Kontextabhängig und deshalb nicht fehlerfrei.",
+    "wiederholungen": "Identische oder sehr ähnliche Nachrichten eines Users. Kann auf hohe Aktivität, Agenda-Setting oder Spam hindeuten.",
+    "cluster": "Automatisch erkannte Themenmuster auf Basis gemeinsam auftretender Begriffe. Keine perfekte Themenklassifikation, sondern heuristische Mustererkennung.",
+    "narrative": "Verdichtete Deutungsmuster, die sich aus wiederkehrenden Begriffen und Themen ableiten. Zeigen, welche Geschichten den Diskurs prägen.",
+    "salienz": "Beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Hohe Salienz kann durch wenige aktive Stimmen entstehen.",
+    "report": "Automatisch generierte Zusammenfassung auf Basis von Chatmustern. Liefert Hinweise auf Dynamiken, keine endgültigen Bewertungen."
+}
+
+
 GERMAN_STOPWORDS = {
     "aber", "alle", "allem", "allen", "aller", "alles", "als", "also", "am", "an",
     "ander", "andere", "anderem", "anderen", "anderer", "anderes", "auch", "auf",
@@ -329,6 +350,10 @@ def build_dataframe(messages) -> pd.DataFrame:
 
 def render_message_text(row: dict) -> str:
     return f"{row['username']}: {row['text']} [{row['timestamp'][11:19]}]"
+
+
+def info_title(title: str, tooltip: str) -> str:
+    return f"{title}  ℹ️"
 
 
 def messages_to_txt(messages) -> str:
@@ -875,7 +900,7 @@ with st.sidebar:
     st.divider()
     st.subheader("Persönliche Filter")
     search_text = st.text_input("Suche", placeholder="z. B. Merz")
-    tone_filter = st.selectbox("Tonlage", ["Alle", "neutral", "fragend", "polarisierend", "abwertend"])
+    tone_filter = st.selectbox("Tonlage", ["Alle", "neutral", "fragend", "polarisierend", "abwertend"], help="Heuristische Einordnung pro Nachricht. 'Polarisierend' basiert vor allem auf Triggerbegriffen, 'abwertend' auf beleidigenden oder aggressiven Markern.")
     only_questions = st.checkbox("Nur Fragen")
     only_triggers = st.checkbox("Nur Trigger")
     only_toxic = st.checkbox("Nur abwertend/toxisch")
@@ -923,9 +948,9 @@ started_at = board["started_at"] if board else None
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Nachrichten", summary["messages"])
 k2.metric("User", summary["users"])
-k3.metric("Fragen", summary["questions"])
-k4.metric("Trigger", summary["trigger_msgs"])
-k5.metric("Abwertend", summary["toxic_msgs"])
+k3.metric("Fragen", summary["questions"], help="Anzahl erkannter Fragen im Chat. Kann echte Verständnisfragen, rhetorische Fragen oder themenlenkende Fragen enthalten.")
+k4.metric("Trigger", summary["trigger_msgs"], help=GLOBAL_TOOLTIPS["trigger"])
+k5.metric("Abwertend", summary["toxic_msgs"], help=GLOBAL_TOOLTIPS["toxisch"])
 k6.metric("Laufzeit", elapsed_label(started_at))
 
 meta1, meta2, meta3 = st.columns(3)
@@ -935,16 +960,21 @@ meta3.info(f"Status: {board['status'] if board else '-'}")
 
 score_cols = st.columns(5)
 for idx, (name, val) in enumerate(impact.items()):
+    tooltip = SCORE_TOOLTIPS.get(name, "")
     score_cols[idx].markdown(
         f"""
         <div class="score-box">
-            <div>{name}</div>
-            <div class="score-num">{val}</div>
-            <div class="muted">Skala -3 bis +3</div>
+            <div>
+                <span title="{tooltip}" style="cursor:help; text-decoration:underline dotted;">{name} ℹ️</span>
+            </div>
+            <div class="score-num" title="{tooltip}">{val}</div>
+            <div class="muted" title="{tooltip}">Skala -3 bis +3</div>
         </div>
         """,
         unsafe_allow_html=True
     )
+
+st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung basiert auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
 
 left, right = st.columns([1.25, 1.0], gap="large")
 
@@ -1017,11 +1047,13 @@ with right:
         )
     else:
         st.info("Noch keine Zeitreihe vorhanden.")
-    st.info(salience_warning(comment_df, scores_df))
+    st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
+    st.caption(GLOBAL_TOOLTIPS["salienz"])
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
+    st.caption("Wort- und Emoji-Häufigkeiten helfen dabei zu sehen, welche Themen und emotionalen Marker den Chat prägen.")
     c1, c2 = st.columns(2)
     words_df = top_words(filtered_df if not filtered_df.empty else comment_df)
     emojis_df = top_emojis(filtered_df if not filtered_df.empty else comment_df)
@@ -1051,7 +1083,7 @@ with l2:
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Wiederholungen / mögliche Spam-Muster")
+    st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
     rep_df = repeated_messages(comment_df, min_count=2)
     if not rep_df.empty:
         st.dataframe(rep_df, use_container_width=True, hide_index=True)
@@ -1061,29 +1093,32 @@ with l2:
 
 with r2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Auffällige User / Diskursverschiebung")
+    st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
     if not scores_df.empty:
         st.dataframe(scores_df.head(25), use_container_width=True, hide_index=True)
     else:
         st.info("Noch keine User-Scores verfügbar.")
-    st.caption("Shift-Score kombiniert Frequenz, Triggerbegriffe, Wiederholungen, Frage-Druck, Capslock und abwertende Marker.")
+    st.caption(GLOBAL_TOOLTIPS["shift_score"])
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Themencluster")
+    st.subheader("Themencluster", help=GLOBAL_TOOLTIPS["cluster"])
     if not clusters_df.empty:
         st.dataframe(clusters_df, use_container_width=True, hide_index=True)
     else:
         st.info("Für Themencluster werden mehr Chatdaten benötigt.")
+    st.caption(GLOBAL_TOOLTIPS["cluster"])
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.subheader("Rollenbild und Narrative")
+st.caption("Rollen: " + GLOBAL_TOOLTIPS["rollen"] + "  |  Narrative: " + GLOBAL_TOOLTIPS["narrative"])
 c1, c2 = st.columns(2)
 with c1:
     if roles:
         role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
         st.dataframe(role_df, use_container_width=True, hide_index=True)
+        st.caption(GLOBAL_TOOLTIPS["rollen"])
     else:
         st.info("Noch keine Rollenverteilung verfügbar.")
 with c2:
@@ -1091,15 +1126,17 @@ with c2:
     if narratives:
         for item in narratives:
             st.write(f"- {item}")
+        st.caption(GLOBAL_TOOLTIPS["narrative"])
     else:
         st.info("Noch keine stabilen Narrative erkannt.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Gemeinsamer Report")
+st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
 report_text = board.get("report_text", "") if board else ""
 if report_text:
     st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
+    st.caption(GLOBAL_TOOLTIPS["report"])
 else:
     st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
 st.markdown("</div>", unsafe_allow_html=True)

@@ -1,20 +1,9 @@
-# TikTok Live Impact Monitor V2 - Shared Dashboard
+# TikTok Live Impact Monitor V2 - Shared Dashboard mit Tooltips
 
-Neu in dieser Version:
-- Board-ID und teilbare URL
-- gemeinsamer Datenstand pro Dashboard
-- persönliche Filter pro Nutzer-Session
-- gemeinsamer Report für alle auf demselben Board
-- SQLite als gemeinsamer Speicher
-- Best-Effort-Profilbilder mit Fallback auf Initialen
-
-Beispiel:
-https://ttlivechat.streamlit.app/?board=abc123
-
-Wichtig:
-- Eine Person sollte den Mitschnitt für ein Board starten
-- Andere können dieselbe URL öffnen und live mitsehen
-- Filter, Suche und User-Fokus bleiben lokal je Session
+Enthält zusätzlich:
+- erklärende Tooltips für die 5 Wirkungsfelder
+- Erläuterungen zu Shift-Score, Rollen, Triggern, Clustern, Narrativen, Salienz und Report
+- kurze Legende zur Skala -3 bis +3
 
 Deployment:
 1. app.py und requirements.txt in GitHub ersetzen
