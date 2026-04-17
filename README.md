@@ -1,4 +1,4 @@
-# TikTok Live Chat Monitor - kostenlose Version
+# TikTok Live Impact Monitor V2 - kostenlose Version
 
 Enthalten:
 - stabile Queue-Anbindung für den Live-Thread
@@ -14,13 +14,15 @@ Enthalten:
 - Wiederholungen / mögliche Spam-Muster
 - heuristischer Shift-Score für auffällige User
 - Themencluster mit TF-IDF + KMeans
-- Diskursprofil
+- fünf Wirkungsfelder nach dem Live-Impact-Kompass
+- Rollenbild und Narrative
 - kostenloser Auto-Report ohne API-Key
+- Best-Effort-Profilbilder mit Fallback auf Initialen
 
 Deployment:
-1. `app.py` und `requirements.txt` in GitHub ersetzen
+1. app.py und requirements.txt in GitHub ersetzen
 2. neu deployen
 3. Browser hart neu laden
 
 Hinweis:
-TikTokLive ist eine inoffizielle Bibliothek. Wenn TikTok intern etwas ändert, kann die Verbindung zeitweise brechen.
+TikTokLive ist eine inoffizielle Bibliothek. Profilbilder werden genutzt, wenn TikTokLive sie im Event mitliefert. Sonst zeigt die App Initialen an.
