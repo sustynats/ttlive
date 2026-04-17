@@ -1,28 +1,22 @@
-# TikTok Live Impact Monitor V2 - kostenlose Version
+# TikTok Live Impact Monitor V2 - Shared Dashboard
 
-Enthalten:
-- stabile Queue-Anbindung für den Live-Thread
-- Zeitzone Europe/Berlin
-- besser lesbarer Zeitstempel rechts unten
-- letzte 2000 sichtbare Nachrichten
-- kompletter Verlauf als TXT, CSV und JSON
-- Verlauf bleibt nach Disconnect erhalten
-- Suchfeld, User- und Tonlagenfilter
-- Kennzahlen zu Fragen, Triggern und abwertender Sprache
-- Aktivitätsanalyse pro Minute
-- Top-Wörter, Emojis und aktivste User
-- Wiederholungen / mögliche Spam-Muster
-- heuristischer Shift-Score für auffällige User
-- Themencluster mit TF-IDF + KMeans
-- fünf Wirkungsfelder nach dem Live-Impact-Kompass
-- Rollenbild und Narrative
-- kostenloser Auto-Report ohne API-Key
+Neu in dieser Version:
+- Board-ID und teilbare URL
+- gemeinsamer Datenstand pro Dashboard
+- persönliche Filter pro Nutzer-Session
+- gemeinsamer Report für alle auf demselben Board
+- SQLite als gemeinsamer Speicher
 - Best-Effort-Profilbilder mit Fallback auf Initialen
+
+Beispiel:
+https://ttlivechat.streamlit.app/?board=abc123
+
+Wichtig:
+- Eine Person sollte den Mitschnitt für ein Board starten
+- Andere können dieselbe URL öffnen und live mitsehen
+- Filter, Suche und User-Fokus bleiben lokal je Session
 
 Deployment:
 1. app.py und requirements.txt in GitHub ersetzen
 2. neu deployen
 3. Browser hart neu laden
-
-Hinweis:
-TikTokLive ist eine inoffizielle Bibliothek. Profilbilder werden genutzt, wenn TikTokLive sie im Event mitliefert. Sonst zeigt die App Initialen an.

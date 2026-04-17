@@ -3,8 +3,10 @@ import json
 import math
 import queue
 import re
+import sqlite3
 import threading
 import hashlib
+import secrets
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -24,12 +26,15 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
+
 APP_TITLE = "TikTok Live Impact Monitor V2"
 TZ = ZoneInfo("Europe/Berlin")
 DISPLAY_LIMIT = 2000
 AUTO_REFRESH_MS = 2000
-EXPORT_DIR = Path("exports")
-EXPORT_DIR.mkdir(exist_ok=True)
+DATA_DIR = Path("shared_data")
+DATA_DIR.mkdir(exist_ok=True)
+DB_PATH = DATA_DIR / "board_store.sqlite3"
+APP_BASE_URL = "https://ttlivechat.streamlit.app/"
 
 GERMAN_STOPWORDS = {
     "aber", "alle", "allem", "allen", "aller", "alles", "als", "also", "am", "an",
@@ -91,6 +96,107 @@ def now_ts() -> str:
     return now_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS boards (
+            board_id TEXT PRIMARY KEY,
+            host_username TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            status TEXT NOT NULL DEFAULT 'idle',
+            report_text TEXT DEFAULT ''
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            type TEXT NOT NULL,
+            username TEXT NOT NULL,
+            text TEXT NOT NULL,
+            avatar_url TEXT,
+            FOREIGN KEY (board_id) REFERENCES boards(board_id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_id_id ON messages(board_id, id)")
+    conn.commit()
+    conn.close()
+
+
+def create_board() -> str:
+    board_id = secrets.token_urlsafe(5).replace("-", "").replace("_", "")[:8].lower()
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO boards(board_id, created_at, status, report_text) VALUES (?, ?, 'idle', '')",
+        (board_id, now_ts())
+    )
+    conn.commit()
+    conn.close()
+    return board_id
+
+
+def get_board(board_id: str):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM boards WHERE board_id = ?", (board_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_board(board_id: str, **kwargs):
+    if not kwargs:
+        return
+    cols = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+    vals = list(kwargs.values()) + [board_id]
+    conn = get_conn()
+    conn.execute(f"UPDATE boards SET {cols} WHERE board_id = ?", vals)
+    conn.commit()
+    conn.close()
+
+
+def insert_message(board_id: str, payload: dict):
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO messages(board_id, timestamp, type, username, text, avatar_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            board_id,
+            payload["timestamp"],
+            payload["type"],
+            payload["username"],
+            payload["text"],
+            payload.get("avatar_url")
+        )
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_messages(board_id: str):
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT timestamp, type, username, text, avatar_url
+        FROM messages
+        WHERE board_id = ?
+        ORDER BY id ASC
+        """,
+        (board_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def normalize_username(username: str) -> str:
     username = username.strip()
     if not username:
@@ -98,25 +204,6 @@ def normalize_username(username: str) -> str:
     if not username.startswith("@"):
         username = "@" + username
     return username
-
-
-def safe_slug(text: str) -> str:
-    text = text.replace("@", "").strip()
-    return re.sub(r"[^a-zA-Z0-9_-]+", "_", text) or "chat"
-
-
-def make_export_base(username: str) -> str:
-    return f"{safe_slug(username)}_{now_dt().strftime('%Y%m%d_%H%M%S')}"
-
-
-def append_txt(filepath: Path, line: str) -> None:
-    with open(filepath, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
-
-def append_jsonl(filepath: Path, payload: dict) -> None:
-    with open(filepath, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def extract_words(text: str) -> list[str]:
@@ -163,9 +250,9 @@ def elapsed_label(start_iso: str | None) -> str:
 
 
 def safe_avatar_url(user_obj) -> str | None:
-    candidates = [
-        "avatar_thumb", "avatar_medium", "avatar_large", "profilePicture"
-    ]
+    if user_obj is None:
+        return None
+    candidates = ["avatar_thumb", "avatar_medium", "avatar_large", "profilePicture"]
     for attr in candidates:
         try:
             media = getattr(user_obj, attr, None)
@@ -259,11 +346,7 @@ def messages_to_json_bytes(messages) -> bytes:
 
 
 def get_comment_messages(messages):
-    cleaned = []
-    for m in messages:
-        if isinstance(m, dict) and m.get("type") == "comment":
-            cleaned.append(m)
-    return cleaned
+    return [m for m in messages if isinstance(m, dict) and m.get("type") == "comment"]
 
 
 def summarize_heuristics(comment_df: pd.DataFrame) -> dict:
@@ -473,21 +556,16 @@ def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df
 
     toxic = float(comment_df["has_toxic_marker"].mean())
     trigger = float(comment_df["has_trigger"].mean())
-    questions = float(comment_df["is_question"].mean())
     caps = float(comment_df["has_caps"].mean())
 
     user_counts = comment_df.groupby("username").size()
-    concentration = 0.0
-    if not user_counts.empty:
-        concentration = float(user_counts.max() / user_counts.sum())
+    concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
 
     cluster_top = 0.0
     if not clusters_df.empty and clusters_df["messages"].sum() > 0:
         cluster_top = float(clusters_df["messages"].max() / clusters_df["messages"].sum())
 
-    flagged_ratio = 0.0
-    if not scores_df.empty:
-        flagged_ratio = float((scores_df["shift_score"] >= 45).mean())
+    flagged_ratio = float((scores_df["shift_score"] >= 45).mean()) if not scores_df.empty else 0.0
 
     emoji_level = min(float(comment_df["emoji_count"].mean()) / 3.0, 1.0)
     avg_len = min(float(comment_df["text"].str.len().mean()) / 120.0, 1.0)
@@ -499,8 +577,6 @@ def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df
         "Systemischer Impact": 0.45 * (1 - trigger) + 0.20 * (1 - flagged_ratio) + 0.35 * (1 - cluster_top),
         "Emotionale Resonanz": 0.35 * (1 - toxic) + 0.20 * (1 - caps) + 0.20 * emoji_level + 0.25 * avg_len,
     }
-
-    # raw in [0,1], transform to [-1,1], then band to -3..3
     return {k: score_to_band((v * 2) - 1) for k, v in raw.items()}
 
 
@@ -526,10 +602,7 @@ def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
 
 
 def role_summary(scores_df: pd.DataFrame) -> dict:
-    if scores_df.empty:
-        return {}
-    counts = scores_df["role"].value_counts().to_dict()
-    return counts
+    return scores_df["role"].value_counts().to_dict() if not scores_df.empty else {}
 
 
 def salience_warning(comment_df: pd.DataFrame, scores_df: pd.DataFrame) -> str:
@@ -643,12 +716,6 @@ Sie zeigen Auffälligkeiten und Wahrscheinlichkeiten, aber keine sicheren Absich
     return report
 
 
-def persist_message(payload: dict) -> None:
-    st.session_state.messages.append(payload)
-    append_txt(st.session_state.export_txt_path, render_message_text(payload))
-    append_jsonl(st.session_state.export_jsonl_path, payload)
-
-
 def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url: str | None = None) -> None:
     queue_obj.put({
         "timestamp": now_ts(),
@@ -659,7 +726,7 @@ def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url
     })
 
 
-def start_client(username: str, queue_obj):
+def start_client(board_id: str, username: str, queue_obj):
     try:
         queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...")
         client = TikTokLiveClient(unique_id=username)
@@ -687,23 +754,24 @@ def start_client(username: str, queue_obj):
 def init_state():
     defaults = {
         "chat_queue": queue.Queue(),
-        "messages": [],
         "listener_thread": None,
-        "started": False,
-        "username": "",
-        "export_base": "",
-        "export_txt_path": EXPORT_DIR / "chat_placeholder.txt",
-        "export_jsonl_path": EXPORT_DIR / "chat_placeholder.jsonl",
-        "capture_started_at": None,
-        "auto_report": "",
+        "board_id": None,
+        "local_report": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
+init_db()
 init_state()
-st.session_state.messages = clean_message_store(st.session_state.messages)
+
+qp = st.query_params
+query_board = qp.get("board")
+if isinstance(query_board, list):
+    query_board = query_board[0] if query_board else None
+if query_board:
+    st.session_state.board_id = query_board
 
 st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
 
@@ -731,107 +799,104 @@ st.markdown(f"""
 <div class="hero">
     <h1 style="margin:0 0 .35rem 0;">💬 {APP_TITLE}</h1>
     <div class="muted">
-        Kostenlose Version 2 mit Impact-Kompass, Scorecard-Logik, Themenclustern,
-        Salienz-Hinweisen, Rollenbildern und Best-Effort-Profilbildern.
+        Kostenloses Shared Dashboard mit Board-ID. Datenstand gemeinsam, Filter persönlich pro Session.
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Steuerung")
-    username_input = st.text_input("TikTok Username", value=st.session_state.username, placeholder="@username")
+    st.header("Dashboard teilen")
     c1, c2 = st.columns(2)
     with c1:
-        start_clicked = st.button("▶ Starten", use_container_width=True)
+        if st.button("Neues Dashboard", use_container_width=True):
+            new_board = create_board()
+            st.session_state.board_id = new_board
+            st.query_params["board"] = new_board
+            st.rerun()
     with c2:
-        new_capture = st.button("🧹 Reset", use_container_width=True)
+        join_board = st.text_input("Board-ID", value=st.session_state.board_id or "", label_visibility="collapsed", placeholder="Board-ID")
+        if st.button("Beitreten", use_container_width=True) and join_board:
+            st.session_state.board_id = join_board.strip().lower()
+            st.query_params["board"] = st.session_state.board_id
+            st.rerun()
 
-    if start_clicked:
+    board_id = st.session_state.board_id
+    share_url = f"{APP_BASE_URL}?board={board_id}" if board_id else APP_BASE_URL
+    st.text_input("Share-URL", value=share_url, help="Diese URL teilen. Alle sehen denselben Datenstand.")
+    st.caption("Filter, Suche und persönliche Ansichten bleiben lokal pro Nutzerin bzw. Nutzer.")
+
+    st.divider()
+    st.header("Live starten")
+    username_input = st.text_input("TikTok Username", placeholder="@username")
+    if st.button("▶ Mitschnitt für dieses Dashboard starten", use_container_width=True, disabled=not board_id):
         try:
+            if not board_id:
+                raise ValueError("Bitte zuerst ein Dashboard erstellen oder beitreten.")
             username = normalize_username(username_input)
-            st.session_state.username = username
-
-            if not st.session_state.export_base:
-                st.session_state.export_base = make_export_base(username)
-                st.session_state.export_txt_path = EXPORT_DIR / f"{st.session_state.export_base}.txt"
-                st.session_state.export_jsonl_path = EXPORT_DIR / f"{st.session_state.export_base}.jsonl"
-                st.session_state.capture_started_at = now_dt().isoformat()
-
+            board = get_board(board_id)
+            if not board:
+                raise ValueError("Board nicht gefunden.")
+            update_board(
+                board_id,
+                host_username=username,
+                started_at=now_dt().isoformat(),
+                status="running"
+            )
             st.session_state.chat_queue = queue.Queue()
-
-            persist_message({
+            insert_message(board_id, {
                 "timestamp": now_ts(),
                 "type": "system",
                 "username": "SYSTEM",
                 "text": f"Mitschnitt gestartet für {username}",
-                "avatar_url": None,
+                "avatar_url": None
             })
-
             thread = threading.Thread(
                 target=start_client,
-                args=(username, st.session_state.chat_queue),
+                args=(board_id, username, st.session_state.chat_queue),
                 daemon=True
             )
             thread.start()
             st.session_state.listener_thread = thread
-            st.session_state.started = True
             st.success(f"Listener gestartet für {username}")
         except Exception as e:
             st.error(str(e))
 
-    if new_capture:
-        st.session_state.chat_queue = queue.Queue()
-        st.session_state.messages = []
-        st.session_state.listener_thread = None
-        st.session_state.started = False
-        st.session_state.username = ""
-        st.session_state.export_base = ""
-        st.session_state.export_txt_path = EXPORT_DIR / "chat_placeholder.txt"
-        st.session_state.export_jsonl_path = EXPORT_DIR / "chat_placeholder.jsonl"
-        st.session_state.capture_started_at = None
-        st.session_state.auto_report = ""
-        st.success("Session zurückgesetzt.")
+    if st.button("📝 Gemeinsamen Report erstellen", use_container_width=True, disabled=not board_id):
+        board = get_board(board_id) if board_id else None
+        messages = load_messages(board_id) if board_id else []
+        comment_df = build_dataframe(get_comment_messages(messages))
+        scores_df = user_scores(comment_df)
+        clusters_df = build_clusters(comment_df, max_clusters=8)
+        impact = impact_scores(comment_df, scores_df, clusters_df)
+        report = generate_rule_based_report(comment_df, scores_df, clusters_df, impact)
+        update_board(board_id, report_text=report)
+        st.success("Report im Dashboard gespeichert.")
 
     st.divider()
-    st.subheader("Filter")
+    st.subheader("Persönliche Filter")
     search_text = st.text_input("Suche", placeholder="z. B. Merz")
     tone_filter = st.selectbox("Tonlage", ["Alle", "neutral", "fragend", "polarisierend", "abwertend"])
     only_questions = st.checkbox("Nur Fragen")
     only_triggers = st.checkbox("Nur Trigger")
     only_toxic = st.checkbox("Nur abwertend/toxisch")
 
-    sidebar_comment_df = build_dataframe(get_comment_messages(st.session_state.messages))
-    all_users = ["Alle"] + sorted(sidebar_comment_df["username"].dropna().unique().tolist()) if not sidebar_comment_df.empty else ["Alle"]
-    user_filter = st.selectbox("User", all_users)
-
-    st.divider()
-    st.subheader("Auto-Report")
-    run_report = st.button("📝 Report erstellen", use_container_width=True)
-
-    st.divider()
-    st.subheader("Export")
-    if st.session_state.messages:
-        export_name = st.session_state.export_base or "chat_export"
-        st.download_button("TXT herunterladen", data=messages_to_txt(st.session_state.messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
-        st.download_button("CSV herunterladen", data=messages_to_csv_bytes(st.session_state.messages), file_name=f"{export_name}.csv", mime="text/csv", use_container_width=True)
-        st.download_button("JSON herunterladen", data=messages_to_json_bytes(st.session_state.messages), file_name=f"{export_name}.json", mime="application/json", use_container_width=True)
-        if st.session_state.auto_report:
-            st.download_button("Report herunterladen", data=st.session_state.auto_report, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
-        st.caption("Exporte enthalten immer den kompletten Verlauf.")
-    else:
-        st.info("Noch kein Verlauf vorhanden.")
-
-if st.session_state.started:
-    st_autorefresh(interval=AUTO_REFRESH_MS, key="live_refresh")
+if board_id:
+    st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
 while not st.session_state.chat_queue.empty():
     msg = st.session_state.chat_queue.get()
-    if isinstance(msg, dict):
-        persist_message(msg)
+    if isinstance(msg, dict) and board_id:
+        insert_message(board_id, msg)
 
-all_messages = clean_message_store(st.session_state.messages)
+board = get_board(board_id) if board_id else None
+messages = load_messages(board_id) if board_id else []
+all_messages = clean_message_store(messages)
 comment_messages = get_comment_messages(all_messages)
 comment_df = build_dataframe(comment_messages)
+
+all_users = ["Alle"] + sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else ["Alle"]
+with st.sidebar:
+    user_filter = st.selectbox("User", all_users)
 
 filters = {
     "search": search_text,
@@ -848,9 +913,12 @@ clusters_df = build_clusters(comment_df, max_clusters=8)
 impact = impact_scores(comment_df, scores_df, clusters_df)
 roles = role_summary(scores_df)
 
-if run_report:
-    st.session_state.auto_report = generate_rule_based_report(comment_df, scores_df, clusters_df, impact)
-    st.sidebar.success("Report erstellt.")
+if not board_id:
+    st.info("Erstelle links ein neues Dashboard oder tritt einem bestehenden Board bei.")
+    st.stop()
+
+host = board["host_username"] if board else None
+started_at = board["started_at"] if board else None
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Nachrichten", summary["messages"])
@@ -858,9 +926,12 @@ k2.metric("User", summary["users"])
 k3.metric("Fragen", summary["questions"])
 k4.metric("Trigger", summary["trigger_msgs"])
 k5.metric("Abwertend", summary["toxic_msgs"])
-k6.metric("Laufzeit", elapsed_label(st.session_state.capture_started_at))
+k6.metric("Laufzeit", elapsed_label(started_at))
 
-st.caption("Die fünf Wirkungsfelder orientieren sich an deinem Live-Impact-Kompass: Diskurskultur, Salienz-Bewusstsein, Verantwortung & Macht, Systemischer Impact und Emotionale Resonanz.")
+meta1, meta2, meta3 = st.columns(3)
+meta1.info(f"Board: {board_id}")
+meta2.info(f"Host: {host or '-'}")
+meta3.info(f"Status: {board['status'] if board else '-'}")
 
 score_cols = st.columns(5)
 for idx, (name, val) in enumerate(impact.items()):
@@ -881,9 +952,9 @@ with left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Live-Feed")
     i1, i2, i3 = st.columns(3)
-    i1.info(f"Host: {st.session_state.username or '-'}")
-    i2.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)}")
-    i3.info(f"Gesamt: {len(comment_df)}")
+    i1.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)}")
+    i2.info(f"Gesamt: {len(comment_df)}")
+    i3.info(f"Dein Filter-User: {user_filter}")
 
     if not filtered_df.empty:
         render_df = filtered_df.sort_values("dt", ascending=True).tail(DISPLAY_LIMIT)
@@ -1025,11 +1096,23 @@ with c2:
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Automatischer Report")
-if st.session_state.auto_report:
-    st.markdown(f'<div class="report-box">{st.session_state.auto_report}</div>', unsafe_allow_html=True)
+st.subheader("Gemeinsamer Report")
+report_text = board.get("report_text", "") if board else ""
+if report_text:
+    st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
 else:
-    st.info("Noch kein Report erstellt. Nutze links in der Sidebar den Button 'Report erstellen'.")
+    st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
 st.markdown("</div>", unsafe_allow_html=True)
 
-st.caption("Verlauf bleibt nach Disconnect erhalten. Nur 'Reset' setzt die Session zurück. Sichtbar sind maximal die letzten 2000 Nachrichten, Exporte enthalten alles.")
+with st.sidebar:
+    st.divider()
+    st.subheader("Exporte")
+    if all_messages:
+        export_name = f"board_{board_id}"
+        st.download_button("TXT herunterladen", data=messages_to_txt(all_messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
+        st.download_button("CSV herunterladen", data=messages_to_csv_bytes(all_messages), file_name=f"{export_name}.csv", mime="text/csv", use_container_width=True)
+        st.download_button("JSON herunterladen", data=messages_to_json_bytes(all_messages), file_name=f"{export_name}.json", mime="application/json", use_container_width=True)
+        if report_text:
+            st.download_button("Report herunterladen", data=report_text, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
+
+st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
