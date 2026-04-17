@@ -1,3 +1,2 @@
-streamlit==1.44.1
-TikTokLive==6.6.3
-pyee==11.1.0
+streamlit==1.56.0
+TikTokLive==6.6.5
