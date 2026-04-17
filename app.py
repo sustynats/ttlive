@@ -1,7 +1,6 @@
 
 import json
 import math
-import os
 import queue
 import re
 import threading
@@ -24,12 +23,6 @@ try:
     from sklearn.feature_extraction.text import TfidfVectorizer
 except Exception:
     SKLEARN_AVAILABLE = False
-
-OPENAI_AVAILABLE = True
-try:
-    from openai import OpenAI
-except Exception:
-    OPENAI_AVAILABLE = False
 
 
 APP_TITLE = "TikTok Live Chat Monitor"
@@ -426,8 +419,8 @@ def persist_message(payload: dict) -> None:
     append_jsonl(st.session_state.export_jsonl_path, payload)
 
 
-def queue_message(msg_type: str, username: str, text: str) -> None:
-    st.session_state.chat_queue.put({
+def queue_message(queue_obj, msg_type: str, username: str, text: str) -> None:
+    queue_obj.put({
         "timestamp": now_ts(),
         "type": msg_type,
         "username": username,
@@ -435,27 +428,132 @@ def queue_message(msg_type: str, username: str, text: str) -> None:
     })
 
 
-def start_client(username: str):
+def start_client(username: str, queue_obj):
     try:
+        queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...")
         client = TikTokLiveClient(unique_id=username)
 
         @client.on(ConnectEvent)
         async def on_connect(event):
-            queue_message("system", "SYSTEM", f"Verbunden mit {username}")
+            queue_message(queue_obj, "system", "SYSTEM", f"Verbunden mit {username}")
 
         @client.on(CommentEvent)
         async def on_comment(event):
             nickname = getattr(event.user, "nickname", "Unbekannt")
             comment = getattr(event, "comment", "")
-            queue_message("comment", nickname, comment)
+            queue_message(queue_obj, "comment", nickname, comment)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
-            queue_message("system", "SYSTEM", "Verbindung getrennt - Verlauf bleibt erhalten")
+            queue_message(queue_obj, "system", "SYSTEM", "Verbindung getrennt - Verlauf bleibt erhalten")
 
         client.run()
     except Exception as e:
-        queue_message("error", "FEHLER", str(e))
+        queue_message(queue_obj, "error", "FEHLER", f"{type(e).__name__}: {e}")
+
+
+def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame) -> str:
+    if comment_df.empty:
+        return "Es gibt noch keine Chatdaten für einen Report."
+
+    summary = summarize_heuristics(comment_df)
+    top_words_df = top_words(comment_df, n=12)
+    top_users_df = top_users(comment_df, n=10)
+    activity_df = activity_per_minute(comment_df)
+    rep_df = repeated_messages(comment_df, min_count=2).head(8)
+
+    peak_text = "Kein Aktivitätspeak erkennbar."
+    if not activity_df.empty:
+        peak_row = activity_df.sort_values("messages", ascending=False).iloc[0]
+        peak_time = pd.to_datetime(peak_row["minute"]).strftime("%H:%M")
+        peak_text = f"Der stärkste Peak lag um {peak_time} Uhr mit {int(peak_row['messages'])} Nachrichten in einer Minute."
+
+    top_cluster_text = "Es konnten noch keine stabilen Themencluster gebildet werden."
+    if not clusters_df.empty:
+        cluster_lines = [f"- {row['label']} ({int(row['messages'])} Nachrichten)" for _, row in clusters_df.head(5).iterrows()]
+        top_cluster_text = "Dominante Themencluster:\n" + "\n".join(cluster_lines)
+
+    suspicious_text = "Noch keine auffälligen User-Muster erkennbar."
+    if not scores_df.empty:
+        flagged = scores_df[scores_df["shift_score"] >= 45].head(8)
+        if not flagged.empty:
+            flagged_lines = [
+                f"- {row['username']}: Shift-Score {row['shift_score']}, Rolle {row['role']}, {int(row['messages'])} Nachrichten"
+                for _, row in flagged.iterrows()
+            ]
+            suspicious_text = (
+                "Auffällige User-Verhaltensmuster:\n"
+                + "\n".join(flagged_lines)
+                + "\nDiese Hinweise deuten auf überdurchschnittliche Aktivität, Triggernutzung, Wiederholungen oder Frage-Druck hin, "
+                  "sind aber kein Beweis für koordinierte oder absichtliche Manipulation."
+            )
+
+    repeated_text = "Keine auffälligen Wiederholungen erkannt."
+    if not rep_df.empty:
+        rep_lines = [f"- {row['username']}: \"{str(row['text'])[:100]}\" ({int(row['count'])}x)" for _, row in rep_df.iterrows()]
+        repeated_text = "Wiederholungen / mögliche Spam-Muster:\n" + "\n".join(rep_lines)
+
+    top_words_text = ", ".join(top_words_df["word"].head(10).tolist()) if not top_words_df.empty else "-"
+    top_users_text = ", ".join([f"{r['username']} ({int(r['messages'])})" for _, r in top_users_df.head(8).iterrows()]) if not top_users_df.empty else "-"
+
+    question_rate = (comment_df["is_question"].mean() * 100) if not comment_df.empty else 0
+    trigger_rate = (comment_df["has_trigger"].mean() * 100) if not comment_df.empty else 0
+    toxic_rate = (comment_df["has_toxic_marker"].mean() * 100) if not comment_df.empty else 0
+
+    if toxic_rate >= 12:
+        tone_summary = "Der Chat hatte eine klar sichtbare abwertende bzw. aggressive Komponente."
+    elif trigger_rate >= 18:
+        tone_summary = "Der Chat war stark von polarisierenden Triggerbegriffen und Narrativ-Markern geprägt."
+    elif question_rate >= 20:
+        tone_summary = "Der Chat war vergleichsweise stark von Fragen und möglicher Themensteuerung über Fragen geprägt."
+    else:
+        tone_summary = "Der Chat wirkte insgesamt eher gemischt, ohne durchgehend dominante Eskalationsmuster."
+
+    possible_shift = "Es gibt keine starken Hinweise auf systematische Diskursverschiebung."
+    if not scores_df.empty and (scores_df["shift_score"] >= 65).any():
+        possible_shift = (
+            "Es gibt deutliche heuristische Hinweise auf mögliche Diskursverschiebung durch einzelne sehr aktive Accounts "
+            "oder wiederkehrende Trigger- und Wiederholungsmuster."
+        )
+    elif not scores_df.empty and (scores_df["shift_score"] >= 45).any():
+        possible_shift = (
+            "Es gibt moderate Hinweise auf thematische Umlenkung oder Verstärkung bestimmter Narrative durch einzelne Accounts."
+        )
+
+    report = f"""1. Kurzfazit
+
+Der Chat umfasste {summary['messages']} Nachrichten von {summary['users']} Usern. {tone_summary}
+
+2. Hauptthemen und Cluster
+
+Die am häufigsten vorkommenden Begriffe waren: {top_words_text}.
+{top_cluster_text}
+
+3. Diskursdynamik und mögliche Kippmomente
+
+{peak_text}
+Fragequote: {question_rate:.1f} Prozent.
+Triggerquote: {trigger_rate:.1f} Prozent.
+Abwertungsquote: {toxic_rate:.1f} Prozent.
+
+4. Auffällige User-Muster
+
+Die aktivsten User waren: {top_users_text}.
+{suspicious_text}
+
+5. Wiederholungen, Spam-Hinweise und mögliche Diskursverschiebung
+
+{repeated_text}
+
+Einschätzung zur Diskursverschiebung:
+{possible_shift}
+
+6. Grenzen der Auswertung
+
+Die Einschätzungen beruhen auf Heuristiken, Häufigkeiten, Wiederholungsmustern, Triggerbegriffen und einfachen Clustern.
+Sie zeigen Auffälligkeiten und Wahrscheinlichkeiten, aber keine sicheren Absichten, Identitäten oder Koordination.
+"""
+    return report
 
 
 def init_state():
@@ -469,74 +567,11 @@ def init_state():
         "export_txt_path": EXPORT_DIR / "chat_placeholder.txt",
         "export_jsonl_path": EXPORT_DIR / "chat_placeholder.jsonl",
         "capture_started_at": None,
-        "ai_report": "",
+        "auto_report": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
-
-def create_ai_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, api_key: str, model_name: str) -> str:
-    if not OPENAI_AVAILABLE:
-        raise RuntimeError("Das Paket openai ist nicht installiert.")
-    if comment_df.empty:
-        raise RuntimeError("Es gibt noch keine Chatdaten für einen Report.")
-
-    client = OpenAI(api_key=api_key)
-
-    top_words_df = top_words(comment_df, n=20)
-    repeated_df = repeated_messages(comment_df, min_count=2).head(15)
-    top_users_df = top_users(comment_df, n=15)
-    summary = summarize_heuristics(comment_df)
-
-    sample_messages = comment_df[["timestamp", "username", "text", "tone"]].tail(120).to_dict(orient="records")
-    suspicious_users = scores_df.head(12).to_dict(orient="records") if not scores_df.empty else []
-    clusters = clusters_df.to_dict(orient="records") if not clusters_df.empty else []
-    activity = activity_per_minute(comment_df).tail(30).to_dict(orient="records")
-
-    prompt = {
-        "task": "Erstelle einen prägnanten deutschsprachigen Analysebericht für einen TikTok-Live-Chat.",
-        "goal": "Muster, Narrative, Cluster, Eskalationsdynamik und auffällige User-Verhaltensweisen herausarbeiten.",
-        "important_rules": [
-            "Nicht behaupten, dass User sicher Bots, Agenten oder koordinierte Akteure sind.",
-            "Nur von Mustern, Auffälligkeiten, Wahrscheinlichkeiten und heuristischen Hinweisen sprechen.",
-            "Klar zwischen Datenlage und Interpretation unterscheiden.",
-            "Kein moralischer Ton, sondern analytisch und gut verständlich.",
-            "Bitte keine Tabellen im Bericht.",
-            "Bitte normalen Bindestrich verwenden."
-        ],
-        "desired_structure": [
-            "1. Kurzfazit",
-            "2. Hauptthemen und Cluster",
-            "3. Diskursdynamik und mögliche Kippmomente",
-            "4. Auffällige User-Muster",
-            "5. Mögliche Versuche der Diskursverschiebung",
-            "6. Grenzen der Auswertung"
-        ],
-        "stats": summary,
-        "top_words": top_words_df.to_dict(orient="records"),
-        "top_users": top_users_df.to_dict(orient="records"),
-        "repeated_messages": repeated_df.to_dict(orient="records"),
-        "user_scores": suspicious_users,
-        "clusters": clusters,
-        "activity_per_minute": activity,
-        "sample_messages_last_120": sample_messages,
-    }
-
-    response = client.responses.create(
-        model=model_name,
-        input=[
-            {
-                "role": "system",
-                "content": "Du schreibst knappe, klare, analytische deutschsprachige Reports über Live-Chat-Diskurse."
-            },
-            {
-                "role": "user",
-                "content": json.dumps(prompt, ensure_ascii=False)
-            }
-        ]
-    )
-    return response.output_text
 
 
 init_state()
@@ -569,7 +604,7 @@ st.markdown(f"""
     <h1 style="margin:0 0 .35rem 0;">💬 {APP_TITLE}</h1>
     <div class="muted">
         Fokus: Chat. Live-Monitoring, Voll-Export, Themencluster, Aktivitätsanalyse,
-        heuristische Bewertung auffälliger User und 1-Klick-KI-Report.
+        heuristische Bewertung auffälliger User und kostenloser Auto-Report.
         Zeitzone: Europe/Berlin.
     </div>
 </div>
@@ -588,18 +623,27 @@ with st.sidebar:
         try:
             username = normalize_username(username_input)
             st.session_state.username = username
+
             if not st.session_state.export_base:
                 st.session_state.export_base = make_export_base(username)
                 st.session_state.export_txt_path = EXPORT_DIR / f"{st.session_state.export_base}.txt"
                 st.session_state.export_jsonl_path = EXPORT_DIR / f"{st.session_state.export_base}.jsonl"
                 st.session_state.capture_started_at = now_dt().isoformat()
+
+            st.session_state.chat_queue = queue.Queue()
+
             persist_message({
                 "timestamp": now_ts(),
                 "type": "system",
                 "username": "SYSTEM",
                 "text": f"Mitschnitt gestartet für {username}"
             })
-            thread = threading.Thread(target=start_client, args=(username,), daemon=True)
+
+            thread = threading.Thread(
+                target=start_client,
+                args=(username, st.session_state.chat_queue),
+                daemon=True
+            )
             thread.start()
             st.session_state.listener_thread = thread
             st.session_state.started = True
@@ -617,7 +661,7 @@ with st.sidebar:
         st.session_state.export_txt_path = EXPORT_DIR / "chat_placeholder.txt"
         st.session_state.export_jsonl_path = EXPORT_DIR / "chat_placeholder.jsonl"
         st.session_state.capture_started_at = None
-        st.session_state.ai_report = ""
+        st.session_state.auto_report = ""
         st.success("Session zurückgesetzt.")
 
     st.divider()
@@ -633,11 +677,8 @@ with st.sidebar:
     user_filter = st.selectbox("User", all_users)
 
     st.divider()
-    st.subheader("KI-Report")
-    default_api_key = os.getenv("OPENAI_API_KEY", "")
-    api_key_input = st.text_input("OpenAI API Key", value="", type="password", help="Leer lassen, wenn OPENAI_API_KEY als Secret oder Umgebungsvariable gesetzt ist.")
-    model_name = st.text_input("Modell", value="gpt-5.4")
-    run_report = st.button("🧠 KI-Report erstellen", use_container_width=True)
+    st.subheader("Auto-Report")
+    run_report = st.button("📝 Kostenlosen Report erstellen", use_container_width=True)
 
     st.divider()
     st.subheader("Export")
@@ -646,8 +687,8 @@ with st.sidebar:
         st.download_button("TXT herunterladen", data=messages_to_txt(st.session_state.messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
         st.download_button("CSV herunterladen", data=messages_to_csv_bytes(st.session_state.messages), file_name=f"{export_name}.csv", mime="text/csv", use_container_width=True)
         st.download_button("JSON herunterladen", data=messages_to_json_bytes(st.session_state.messages), file_name=f"{export_name}.json", mime="application/json", use_container_width=True)
-        if st.session_state.ai_report:
-            st.download_button("KI-Report herunterladen", data=st.session_state.ai_report, file_name=f"{export_name}_ki_report.txt", mime="text/plain", use_container_width=True)
+        if st.session_state.auto_report:
+            st.download_button("Report herunterladen", data=st.session_state.auto_report, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
         st.caption("Exporte enthalten immer den kompletten Verlauf.")
     else:
         st.info("Noch kein Verlauf vorhanden.")
@@ -678,22 +719,8 @@ scores_df = user_scores(comment_df)
 clusters_df = build_clusters(comment_df, max_clusters=8)
 
 if run_report:
-    effective_api_key = api_key_input.strip() or os.getenv("OPENAI_API_KEY", "")
-    if not effective_api_key:
-        st.sidebar.error("Für den KI-Report brauchst du einen OpenAI API Key als Eingabe oder Umgebungsvariable.")
-    else:
-        try:
-            with st.spinner("KI-Report wird erstellt ..."):
-                st.session_state.ai_report = create_ai_report(
-                    comment_df=comment_df,
-                    scores_df=scores_df,
-                    clusters_df=clusters_df,
-                    api_key=effective_api_key,
-                    model_name=model_name.strip() or "gpt-5.4"
-                )
-            st.sidebar.success("KI-Report erstellt.")
-        except Exception as e:
-            st.sidebar.error(f"KI-Report fehlgeschlagen: {e}")
+    st.session_state.auto_report = generate_rule_based_report(comment_df, scores_df, clusters_df)
+    st.sidebar.success("Report erstellt.")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Nachrichten", summary["messages"])
@@ -865,11 +892,11 @@ else:
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("KI-Zusammenfassung")
-if st.session_state.ai_report:
-    st.markdown(f'<div class="report-box">{st.session_state.ai_report}</div>', unsafe_allow_html=True)
+st.subheader("Automatischer Report")
+if st.session_state.auto_report:
+    st.markdown(f'<div class="report-box">{st.session_state.auto_report}</div>', unsafe_allow_html=True)
 else:
-    st.info("Noch kein KI-Report erstellt. Nutze links in der Sidebar den Button 'KI-Report erstellen'.")
+    st.info("Noch kein Report erstellt. Nutze links in der Sidebar den Button 'Kostenlosen Report erstellen'.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.caption("Verlauf bleibt nach Disconnect erhalten. Nur 'Reset' setzt die Session zurück. Sichtbar sind maximal die letzten 2000 Nachrichten, Exporte enthalten alles.")
