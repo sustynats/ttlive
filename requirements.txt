@@ -1,3 +1,6 @@
 streamlit==1.56.0
 TikTokLive==6.6.5
 streamlit-autorefresh==1.0.1
+pandas>=2.2
+altair>=5.0
+scikit-learn>=1.5
