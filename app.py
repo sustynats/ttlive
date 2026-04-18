@@ -1197,13 +1197,10 @@ with right:
     st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
     st.caption(GLOBAL_TOOLTIPS["salienz"])
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Warum dieser Hinweis?")
     st.write("Salienz beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Wenige sehr aktive Stimmen oder Trigger können den Diskurs überproportional prägen und dadurch Wahrnehmung verzerren.")
     st.write("Der Hinweis oben ändert sich dynamisch mit dem Chat. Er reagiert vor allem auf Triggerquote, Konzentration auf wenige User und die Frage, ob Aufmerksamkeit auf wenige starke Impulse gezogen wird.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
     st.caption("Wort- und Emoji-Häufigkeiten helfen dabei zu sehen, welche Themen und emotionalen Marker den Chat prägen.")
     c1, c2 = st.columns(2)
@@ -1213,7 +1210,6 @@ with right:
         st.dataframe(words_df if not words_df.empty else pd.DataFrame(columns=["word", "count"]), use_container_width=True, hide_index=True)
     with c2:
         st.dataframe(emojis_df if not emojis_df.empty else pd.DataFrame(columns=["emoji", "count"]), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 l2, r2 = st.columns(2, gap="large")
 
