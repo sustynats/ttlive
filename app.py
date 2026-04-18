@@ -3,10 +3,8 @@ import json
 import math
 import queue
 import re
-import sqlite3
 import threading
 import hashlib
-import secrets
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -26,36 +24,12 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
-
 APP_TITLE = "TikTok Live Impact Monitor V2"
 TZ = ZoneInfo("Europe/Berlin")
 DISPLAY_LIMIT = 2000
 AUTO_REFRESH_MS = 2000
-DATA_DIR = Path("shared_data")
-DATA_DIR.mkdir(exist_ok=True)
-DB_PATH = DATA_DIR / "board_store.sqlite3"
-APP_BASE_URL = "https://ttlivechat.streamlit.app/"
-
-SCORE_TOOLTIPS = {
-    "Diskurskultur": "Misst, wie respektvoll und konstruktiv die Kommunikation verläuft. -3 = stark toxisch, dominant oder abwertend. +3 = respektvoll, vielfältig und dialogorientiert.",
-    "Salienz-Bewusstsein": "Zeigt, ob Aufmerksamkeit verzerrt wird. -3 = wenige laute Stimmen oder Trigger dominieren. +3 = ausgewogene Aufmerksamkeit und Themenvielfalt.",
-    "Verantwortung & Macht": "Misst, wie verantwortungsvoll Einfluss und Bühne wirken. -3 = Eskalation, Manipulation oder problematische Verstärkung. +3 = verantwortungsvolle Kommunikation und klare Begrenzung destruktiver Dynamiken.",
-    "Systemischer Impact": "Beschreibt die Wirkung auf den Gesamtdiskurs. -3 = Spaltung, Eskalation oder Verzerrung. +3 = Stabilisierung, Einordnung und gesellschaftlich konstruktive Wirkung.",
-    "Emotionale Resonanz": "Erfasst die Qualität der emotionalen Dynamik. -3 = Hass, Aggression oder Unsicherheit. +3 = Verbindung, Sicherheit, Empathie und konstruktive Resonanz.",
-}
-
-GLOBAL_TOOLTIPS = {
-    "shift_score": "Kombinierter Auffälligkeitswert pro User. Berücksichtigt Aktivität, Triggerbegriffe, Wiederholungen, Frage-Druck, Capslock und abwertende Marker. Hohe Werte bedeuten überproportionalen Einfluss auf den Diskurs - nicht automatisch Manipulation.",
-    "rollen": "Heuristische Einordnung auf Basis von Kommunikationsmustern. Dient zur Orientierung, nicht zur Bewertung von Personen.",
-    "trigger": "Begriffe oder Formulierungen, die typischerweise emotionale Reaktionen, Polarisierung oder Aufmerksamkeitsverschiebung auslösen.",
-    "toxisch": "Erkannt über sprachliche Marker wie Beleidigungen oder aggressive Formulierungen. Kontextabhängig und deshalb nicht fehlerfrei.",
-    "wiederholungen": "Identische oder sehr ähnliche Nachrichten eines Users. Kann auf hohe Aktivität, Agenda-Setting oder Spam hindeuten.",
-    "cluster": "Automatisch erkannte Themenmuster auf Basis gemeinsam auftretender Begriffe. Keine perfekte Themenklassifikation, sondern heuristische Mustererkennung.",
-    "narrative": "Verdichtete Deutungsmuster, die sich aus wiederkehrenden Begriffen und Themen ableiten. Zeigen, welche Geschichten den Diskurs prägen.",
-    "salienz": "Beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Hohe Salienz kann durch wenige aktive Stimmen entstehen.",
-    "report": "Automatisch generierte Zusammenfassung auf Basis von Chatmustern. Liefert Hinweise auf Dynamiken, keine endgültigen Bewertungen."
-}
-
+EXPORT_DIR = Path("exports")
+EXPORT_DIR.mkdir(exist_ok=True)
 
 GERMAN_STOPWORDS = {
     "aber", "alle", "allem", "allen", "aller", "alles", "als", "also", "am", "an",
@@ -117,107 +91,6 @@ def now_ts() -> str:
     return now_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS boards (
-            board_id TEXT PRIMARY KEY,
-            host_username TEXT,
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            status TEXT NOT NULL DEFAULT 'idle',
-            report_text TEXT DEFAULT ''
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            board_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            type TEXT NOT NULL,
-            username TEXT NOT NULL,
-            text TEXT NOT NULL,
-            avatar_url TEXT,
-            FOREIGN KEY (board_id) REFERENCES boards(board_id)
-        )
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_id_id ON messages(board_id, id)")
-    conn.commit()
-    conn.close()
-
-
-def create_board() -> str:
-    board_id = secrets.token_urlsafe(5).replace("-", "").replace("_", "")[:8].lower()
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO boards(board_id, created_at, status, report_text) VALUES (?, ?, 'idle', '')",
-        (board_id, now_ts())
-    )
-    conn.commit()
-    conn.close()
-    return board_id
-
-
-def get_board(board_id: str):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM boards WHERE board_id = ?", (board_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def update_board(board_id: str, **kwargs):
-    if not kwargs:
-        return
-    cols = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-    vals = list(kwargs.values()) + [board_id]
-    conn = get_conn()
-    conn.execute(f"UPDATE boards SET {cols} WHERE board_id = ?", vals)
-    conn.commit()
-    conn.close()
-
-
-def insert_message(board_id: str, payload: dict):
-    conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO messages(board_id, timestamp, type, username, text, avatar_url)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            board_id,
-            payload["timestamp"],
-            payload["type"],
-            payload["username"],
-            payload["text"],
-            payload.get("avatar_url")
-        )
-    )
-    conn.commit()
-    conn.close()
-
-
-def load_messages(board_id: str):
-    conn = get_conn()
-    rows = conn.execute(
-        """
-        SELECT timestamp, type, username, text, avatar_url
-        FROM messages
-        WHERE board_id = ?
-        ORDER BY id ASC
-        """,
-        (board_id,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
 def normalize_username(username: str) -> str:
     username = username.strip()
     if not username:
@@ -225,6 +98,25 @@ def normalize_username(username: str) -> str:
     if not username.startswith("@"):
         username = "@" + username
     return username
+
+
+def safe_slug(text: str) -> str:
+    text = text.replace("@", "").strip()
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", text) or "chat"
+
+
+def make_export_base(username: str) -> str:
+    return f"{safe_slug(username)}_{now_dt().strftime('%Y%m%d_%H%M%S')}"
+
+
+def append_txt(filepath: Path, line: str) -> None:
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def append_jsonl(filepath: Path, payload: dict) -> None:
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def extract_words(text: str) -> list[str]:
@@ -271,8 +163,6 @@ def elapsed_label(start_iso: str | None) -> str:
 
 
 def safe_avatar_url(user_obj) -> str | None:
-    if user_obj is None:
-        return None
     candidates = ["avatar_thumb", "avatar_medium", "avatar_large", "profilePicture"]
     for attr in candidates:
         try:
@@ -350,10 +240,6 @@ def build_dataframe(messages) -> pd.DataFrame:
 
 def render_message_text(row: dict) -> str:
     return f"{row['username']}: {row['text']} [{row['timestamp'][11:19]}]"
-
-
-def info_title(title: str, tooltip: str) -> str:
-    return f"{title}  ℹ️"
 
 
 def messages_to_txt(messages) -> str:
@@ -465,12 +351,12 @@ def user_scores(comment_df: pd.DataFrame) -> pd.DataFrame:
         volume_factor = min(total / 12.0, 1.0)
         shift_score = round(
             100 * (
-                0.28 * volume_factor +
+                0.30 * volume_factor +
                 0.24 * trigger_ratio +
                 0.18 * repeat_ratio +
                 0.16 * question_ratio +
-                0.08 * caps_ratio +
-                0.06 * toxic_ratio
+                0.07 * caps_ratio +
+                0.05 * toxic_ratio
             ),
             1
         )
@@ -478,9 +364,9 @@ def user_scores(comment_df: pd.DataFrame) -> pd.DataFrame:
             role = "stark auffällig"
         elif shift_score >= 45:
             role = "auffällig"
-        elif trigger_ratio >= 0.4:
+        elif trigger_ratio >= 0.40:
             role = "Narrativ-Verstärker"
-        elif question_ratio >= 0.5 and total >= 4:
+        elif question_ratio >= 0.50 and total >= 4:
             role = "Frage-Treiber"
         elif total >= 8 and toxic_ratio < 0.15:
             role = "sehr aktiv"
@@ -552,36 +438,43 @@ def filtered_comment_df(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     return out
 
 
-def score_to_band(value: float) -> int:
-    value = max(min(value, 1.0), -1.0)
-    if value <= -0.66:
-        return -3
-    if value <= -0.33:
-        return -2
-    if value < 0:
-        return -1
-    if value == 0:
-        return 0
-    if value < 0.33:
-        return 1
-    if value < 0.66:
+# ---------- Impact-Kompass V2 ----------
+IMPACT_HELP = {
+    "Diskurskultur": "Wie respektvoll und ausgewogen der Chat ist. Toxische Sprache, Capslock und Dominanz einzelner Stimmen drücken den Wert.",
+    "Salienz-Bewusstsein": "Ob Aufmerksamkeit durch wenige laute Trigger-Kommentare verzerrt wird oder relativ ausgewogen verteilt bleibt.",
+    "Verantwortung & Macht": "Wie stark einzelne Accounts oder aggressive Muster den Raum dominieren. Hohe Trigger- und Auffälligkeitswerte senken den Score.",
+    "Systemischer Impact": "Ob sich Polarisierung, enge Narrative und Themenverengung zeigen oder eher Differenzierung und Breite.",
+    "Emotionale Resonanz": "Wie sich der Chat emotional anfühlt. Zu viel Aggression senkt den Wert, konstruktive Beteiligung stabilisiert ihn."
+}
+
+
+def calibrate_band(raw_score: float) -> int:
+    # conservative thresholds so +3 is rare
+    if raw_score >= 0.88:
+        return 3
+    if raw_score >= 0.75:
         return 2
-    return 3
+    if raw_score >= 0.62:
+        return 1
+    if raw_score >= 0.46:
+        return 0
+    if raw_score >= 0.34:
+        return -1
+    if raw_score >= 0.22:
+        return -2
+    return -3
 
 
 def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame) -> dict:
     if comment_df.empty:
-        return {
-            "Diskurskultur": 0,
-            "Salienz-Bewusstsein": 0,
-            "Verantwortung & Macht": 0,
-            "Systemischer Impact": 0,
-            "Emotionale Resonanz": 0,
-        }
+        return {name: 0 for name in IMPACT_HELP}
 
     toxic = float(comment_df["has_toxic_marker"].mean())
     trigger = float(comment_df["has_trigger"].mean())
+    questions = float(comment_df["is_question"].mean())
     caps = float(comment_df["has_caps"].mean())
+    avg_len = min(float(comment_df["text"].str.len().mean()) / 110.0, 1.0)
+    emoji_balance = min(float(comment_df["emoji_count"].mean()) / 2.5, 1.0)
 
     user_counts = comment_df.groupby("username").size()
     concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
@@ -591,18 +484,82 @@ def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df
         cluster_top = float(clusters_df["messages"].max() / clusters_df["messages"].sum())
 
     flagged_ratio = float((scores_df["shift_score"] >= 45).mean()) if not scores_df.empty else 0.0
+    severe_ratio = float((scores_df["shift_score"] >= 65).mean()) if not scores_df.empty else 0.0
 
-    emoji_level = min(float(comment_df["emoji_count"].mean()) / 3.0, 1.0)
-    avg_len = min(float(comment_df["text"].str.len().mean()) / 120.0, 1.0)
-
+    # Higher is better, but conservative and punitive on imbalance/trigger patterns
     raw = {
-        "Diskurskultur": 0.45 * (1 - toxic) + 0.25 * (1 - caps) + 0.30 * (1 - concentration),
-        "Salienz-Bewusstsein": 0.45 * (1 - trigger) + 0.25 * (1 - concentration) + 0.30 * (1 - cluster_top),
-        "Verantwortung & Macht": 0.40 * (1 - toxic) + 0.30 * (1 - flagged_ratio) + 0.30 * (1 - trigger),
-        "Systemischer Impact": 0.45 * (1 - trigger) + 0.20 * (1 - flagged_ratio) + 0.35 * (1 - cluster_top),
-        "Emotionale Resonanz": 0.35 * (1 - toxic) + 0.20 * (1 - caps) + 0.20 * emoji_level + 0.25 * avg_len,
+        "Diskurskultur": (
+            0.38 * (1 - toxic) +
+            0.18 * (1 - caps) +
+            0.22 * (1 - concentration) +
+            0.10 * min(questions + 0.15, 1.0) +
+            0.12 * min(avg_len + 0.10, 1.0)
+        ),
+        "Salienz-Bewusstsein": (
+            0.38 * (1 - trigger) +
+            0.24 * (1 - concentration) +
+            0.24 * (1 - cluster_top) +
+            0.14 * (1 - severe_ratio)
+        ),
+        "Verantwortung & Macht": (
+            0.34 * (1 - flagged_ratio) +
+            0.26 * (1 - severe_ratio) +
+            0.22 * (1 - toxic) +
+            0.18 * (1 - concentration)
+        ),
+        "Systemischer Impact": (
+            0.34 * (1 - trigger) +
+            0.24 * (1 - cluster_top) +
+            0.22 * (1 - flagged_ratio) +
+            0.20 * min(avg_len + 0.15, 1.0)
+        ),
+        "Emotionale Resonanz": (
+            0.35 * (1 - toxic) +
+            0.18 * (1 - caps) +
+            0.18 * min(emoji_balance + 0.15, 1.0) +
+            0.14 * min(avg_len + 0.10, 1.0) +
+            0.15 * (1 - concentration)
+        ),
     }
-    return {k: score_to_band((v * 2) - 1) for k, v in raw.items()}
+    return {k: calibrate_band(max(0.0, min(v, 1.0))) for k, v in raw.items()}
+
+
+def score_label(score: int) -> str:
+    mapping = {
+        3: "sehr stark",
+        2: "stark",
+        1: "eher gut",
+        0: "neutral",
+        -1: "leicht kritisch",
+        -2: "kritisch",
+        -3: "stark kritisch",
+    }
+    return mapping.get(score, "neutral")
+
+
+def score_color(score: int) -> str:
+    mapping = {
+        3: "#16a34a",
+        2: "#22c55e",
+        1: "#84cc16",
+        0: "#f59e0b",
+        -1: "#f97316",
+        -2: "#ef4444",
+        -3: "#b91c1c",
+    }
+    return mapping.get(score, "#94a3b8")
+
+
+def score_arrow(score: int) -> str:
+    if score >= 2:
+        return "▲"
+    if score == 1:
+        return "↗"
+    if score == 0:
+        return "→"
+    if score == -1:
+        return "↘"
+    return "▼"
 
 
 def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
@@ -627,7 +584,9 @@ def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
 
 
 def role_summary(scores_df: pd.DataFrame) -> dict:
-    return scores_df["role"].value_counts().to_dict() if not scores_df.empty else {}
+    if scores_df.empty:
+        return {}
+    return scores_df["role"].value_counts().to_dict()
 
 
 def salience_warning(comment_df: pd.DataFrame, scores_df: pd.DataFrame) -> str:
@@ -691,7 +650,7 @@ def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame
         rep_lines = [f"- {row['username']}: \"{str(row['text'])[:100]}\" ({int(row['count'])}x)" for _, row in rep_df.iterrows()]
         repeated_text = "Wiederholungen / mögliche Spam-Muster:\n" + "\n".join(rep_lines)
 
-    impact_text = "\n".join([f"- {k}: {v}" for k, v in impact.items()])
+    impact_text = "\n".join([f"- {k}: {v} ({score_label(v)})" for k, v in impact.items()])
     top_words_text = ", ".join(top_words_df["word"].head(10).tolist()) if not top_words_df.empty else "-"
     top_users_text = ", ".join([f"{r['username']} ({int(r['messages'])})" for _, r in top_users_df.head(8).iterrows()]) if not top_users_df.empty else "-"
     question_rate = (comment_df["is_question"].mean() * 100) if not comment_df.empty else 0
@@ -741,6 +700,12 @@ Sie zeigen Auffälligkeiten und Wahrscheinlichkeiten, aber keine sicheren Absich
     return report
 
 
+def persist_message(payload: dict) -> None:
+    st.session_state.messages.append(payload)
+    append_txt(st.session_state.export_txt_path, render_message_text(payload))
+    append_jsonl(st.session_state.export_jsonl_path, payload)
+
+
 def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url: str | None = None) -> None:
     queue_obj.put({
         "timestamp": now_ts(),
@@ -751,7 +716,7 @@ def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url
     })
 
 
-def start_client(board_id: str, username: str, queue_obj):
+def start_client(username: str, queue_obj):
     try:
         queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...")
         client = TikTokLiveClient(unique_id=username)
@@ -779,24 +744,23 @@ def start_client(board_id: str, username: str, queue_obj):
 def init_state():
     defaults = {
         "chat_queue": queue.Queue(),
+        "messages": [],
         "listener_thread": None,
-        "board_id": None,
-        "local_report": "",
+        "started": False,
+        "username": "",
+        "export_base": "",
+        "export_txt_path": EXPORT_DIR / "chat_placeholder.txt",
+        "export_jsonl_path": EXPORT_DIR / "chat_placeholder.jsonl",
+        "capture_started_at": None,
+        "auto_report": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-init_db()
 init_state()
-
-qp = st.query_params
-query_board = qp.get("board")
-if isinstance(query_board, list):
-    query_board = query_board[0] if query_board else None
-if query_board:
-    st.session_state.board_id = query_board
+st.session_state.messages = clean_message_store(st.session_state.messages)
 
 st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
 
@@ -813,8 +777,34 @@ st.markdown("""
     .pill-trigger { background: rgba(245,158,11,.13); border-color: rgba(245,158,11,.28); }
     .pill-toxic { background: rgba(244,63,94,.12); border-color: rgba(244,63,94,.28); }
     .pill-question { background: rgba(59,130,246,.12); border-color: rgba(59,130,246,.28); }
-    .score-box { border-radius: 14px; padding: .8rem; border: 1px solid rgba(148,163,184,.18); background: rgba(255,255,255,.02); text-align: center; }
-    .score-num { font-size: 1.45rem; font-weight: 700; }
+    .score-card {
+        border-radius: 18px;
+        padding: .85rem .95rem;
+        border: 1px solid rgba(148,163,184,.18);
+        background: rgba(255,255,255,.02);
+        min-height: 172px;
+    }
+    .score-title {
+        font-weight: 600;
+        line-height: 1.2;
+        margin-bottom: .45rem;
+    }
+    .score-big {
+        font-size: 2rem;
+        font-weight: 800;
+        line-height: 1;
+        margin-top: .35rem;
+        margin-bottom: .25rem;
+    }
+    .score-sub {
+        color: #94a3b8;
+        font-size: .85rem;
+    }
+    .score-arrow {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-left: .2rem;
+    }
     .avatar-fallback { width: 44px; height: 44px; border-radius: 999px; display:flex; align-items:center; justify-content:center; font-size:.82rem; font-weight:700; color:white; }
     .report-box { white-space: pre-wrap; line-height: 1.55; }
 </style>
@@ -824,104 +814,107 @@ st.markdown(f"""
 <div class="hero">
     <h1 style="margin:0 0 .35rem 0;">💬 {APP_TITLE}</h1>
     <div class="muted">
-        Kostenloses Shared Dashboard mit Board-ID. Datenstand gemeinsam, Filter persönlich pro Session.
+        Kostenlose Version 2 mit Impact-Kompass, konservativer Scorecard,
+        Salienz-Hinweisen, Rollenbildern und Best-Effort-Profilbildern.
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Dashboard teilen")
+    st.header("Steuerung")
+    username_input = st.text_input("TikTok Username", value=st.session_state.username, placeholder="@username")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Neues Dashboard", use_container_width=True):
-            new_board = create_board()
-            st.session_state.board_id = new_board
-            st.query_params["board"] = new_board
-            st.rerun()
+        start_clicked = st.button("▶ Starten", use_container_width=True)
     with c2:
-        join_board = st.text_input("Board-ID", value=st.session_state.board_id or "", label_visibility="collapsed", placeholder="Board-ID")
-        if st.button("Beitreten", use_container_width=True) and join_board:
-            st.session_state.board_id = join_board.strip().lower()
-            st.query_params["board"] = st.session_state.board_id
-            st.rerun()
+        new_capture = st.button("🧹 Reset", use_container_width=True)
 
-    board_id = st.session_state.board_id
-    share_url = f"{APP_BASE_URL}?board={board_id}" if board_id else APP_BASE_URL
-    st.text_input("Share-URL", value=share_url, help="Diese URL teilen. Alle sehen denselben Datenstand.")
-    st.caption("Filter, Suche und persönliche Ansichten bleiben lokal pro Nutzerin bzw. Nutzer.")
-
-    st.divider()
-    st.header("Live starten")
-    username_input = st.text_input("TikTok Username", placeholder="@username")
-    if st.button("▶ Mitschnitt für dieses Dashboard starten", use_container_width=True, disabled=not board_id):
+    if start_clicked:
         try:
-            if not board_id:
-                raise ValueError("Bitte zuerst ein Dashboard erstellen oder beitreten.")
             username = normalize_username(username_input)
-            board = get_board(board_id)
-            if not board:
-                raise ValueError("Board nicht gefunden.")
-            update_board(
-                board_id,
-                host_username=username,
-                started_at=now_dt().isoformat(),
-                status="running"
-            )
+            st.session_state.username = username
+
+            if not st.session_state.export_base:
+                st.session_state.export_base = make_export_base(username)
+                st.session_state.export_txt_path = EXPORT_DIR / f"{st.session_state.export_base}.txt"
+                st.session_state.export_jsonl_path = EXPORT_DIR / f"{st.session_state.export_base}.jsonl"
+                st.session_state.capture_started_at = now_dt().isoformat()
+
             st.session_state.chat_queue = queue.Queue()
-            insert_message(board_id, {
+
+            persist_message({
                 "timestamp": now_ts(),
                 "type": "system",
                 "username": "SYSTEM",
                 "text": f"Mitschnitt gestartet für {username}",
-                "avatar_url": None
+                "avatar_url": None,
             })
+
             thread = threading.Thread(
                 target=start_client,
-                args=(board_id, username, st.session_state.chat_queue),
+                args=(username, st.session_state.chat_queue),
                 daemon=True
             )
             thread.start()
             st.session_state.listener_thread = thread
+            st.session_state.started = True
             st.success(f"Listener gestartet für {username}")
         except Exception as e:
             st.error(str(e))
 
-    if st.button("📝 Gemeinsamen Report erstellen", use_container_width=True, disabled=not board_id):
-        board = get_board(board_id) if board_id else None
-        messages = load_messages(board_id) if board_id else []
-        comment_df = build_dataframe(get_comment_messages(messages))
-        scores_df = user_scores(comment_df)
-        clusters_df = build_clusters(comment_df, max_clusters=8)
-        impact = impact_scores(comment_df, scores_df, clusters_df)
-        report = generate_rule_based_report(comment_df, scores_df, clusters_df, impact)
-        update_board(board_id, report_text=report)
-        st.success("Report im Dashboard gespeichert.")
+    if new_capture:
+        st.session_state.chat_queue = queue.Queue()
+        st.session_state.messages = []
+        st.session_state.listener_thread = None
+        st.session_state.started = False
+        st.session_state.username = ""
+        st.session_state.export_base = ""
+        st.session_state.export_txt_path = EXPORT_DIR / "chat_placeholder.txt"
+        st.session_state.export_jsonl_path = EXPORT_DIR / "chat_placeholder.jsonl"
+        st.session_state.capture_started_at = None
+        st.session_state.auto_report = ""
+        st.success("Session zurückgesetzt.")
 
     st.divider()
-    st.subheader("Persönliche Filter")
+    st.subheader("Filter")
     search_text = st.text_input("Suche", placeholder="z. B. Merz")
-    tone_filter = st.selectbox("Tonlage", ["Alle", "neutral", "fragend", "polarisierend", "abwertend"], help="Heuristische Einordnung pro Nachricht. 'Polarisierend' basiert vor allem auf Triggerbegriffen, 'abwertend' auf beleidigenden oder aggressiven Markern.")
+    tone_filter = st.selectbox("Tonlage", ["Alle", "neutral", "fragend", "polarisierend", "abwertend"])
     only_questions = st.checkbox("Nur Fragen")
     only_triggers = st.checkbox("Nur Trigger")
     only_toxic = st.checkbox("Nur abwertend/toxisch")
 
-if board_id:
-    st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
+    sidebar_comment_df = build_dataframe(get_comment_messages(st.session_state.messages))
+    all_users = ["Alle"] + sorted(sidebar_comment_df["username"].dropna().unique().tolist()) if not sidebar_comment_df.empty else ["Alle"]
+    user_filter = st.selectbox("User", all_users)
+
+    st.divider()
+    st.subheader("Auto-Report")
+    run_report = st.button("📝 Report erstellen", use_container_width=True)
+
+    st.divider()
+    st.subheader("Export")
+    if st.session_state.messages:
+        export_name = st.session_state.export_base or "chat_export"
+        st.download_button("TXT herunterladen", data=messages_to_txt(st.session_state.messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
+        st.download_button("CSV herunterladen", data=messages_to_csv_bytes(st.session_state.messages), file_name=f"{export_name}.csv", mime="text/csv", use_container_width=True)
+        st.download_button("JSON herunterladen", data=messages_to_json_bytes(st.session_state.messages), file_name=f"{export_name}.json", mime="application/json", use_container_width=True)
+        if st.session_state.auto_report:
+            st.download_button("Report herunterladen", data=st.session_state.auto_report, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
+        st.caption("Exporte enthalten immer den kompletten Verlauf.")
+    else:
+        st.info("Noch kein Verlauf vorhanden.")
+
+if st.session_state.started:
+    st_autorefresh(interval=AUTO_REFRESH_MS, key="live_refresh")
 
 while not st.session_state.chat_queue.empty():
     msg = st.session_state.chat_queue.get()
-    if isinstance(msg, dict) and board_id:
-        insert_message(board_id, msg)
+    if isinstance(msg, dict):
+        persist_message(msg)
 
-board = get_board(board_id) if board_id else None
-messages = load_messages(board_id) if board_id else []
-all_messages = clean_message_store(messages)
+all_messages = clean_message_store(st.session_state.messages)
 comment_messages = get_comment_messages(all_messages)
 comment_df = build_dataframe(comment_messages)
-
-all_users = ["Alle"] + sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else ["Alle"]
-with st.sidebar:
-    user_filter = st.selectbox("User", all_users)
 
 filters = {
     "search": search_text,
@@ -938,43 +931,43 @@ clusters_df = build_clusters(comment_df, max_clusters=8)
 impact = impact_scores(comment_df, scores_df, clusters_df)
 roles = role_summary(scores_df)
 
-if not board_id:
-    st.info("Erstelle links ein neues Dashboard oder tritt einem bestehenden Board bei.")
-    st.stop()
-
-host = board["host_username"] if board else None
-started_at = board["started_at"] if board else None
+if run_report:
+    st.session_state.auto_report = generate_rule_based_report(comment_df, scores_df, clusters_df, impact)
+    st.sidebar.success("Report erstellt.")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Nachrichten", summary["messages"])
 k2.metric("User", summary["users"])
-k3.metric("Fragen", summary["questions"], help="Anzahl erkannter Fragen im Chat. Kann echte Verständnisfragen, rhetorische Fragen oder themenlenkende Fragen enthalten.")
-k4.metric("Trigger", summary["trigger_msgs"], help=GLOBAL_TOOLTIPS["trigger"])
-k5.metric("Abwertend", summary["toxic_msgs"], help=GLOBAL_TOOLTIPS["toxisch"])
-k6.metric("Laufzeit", elapsed_label(started_at))
+k3.metric("Fragen", summary["questions"])
+k4.metric("Trigger", summary["trigger_msgs"])
+k5.metric("Abwertend", summary["toxic_msgs"])
+k6.metric("Laufzeit", elapsed_label(st.session_state.capture_started_at))
 
-meta1, meta2, meta3 = st.columns(3)
-meta1.info(f"Board: {board_id}")
-meta2.info(f"Host: {host or '-'}")
-meta3.info(f"Status: {board['status'] if board else '-'}")
+st.caption("Die fünf Wirkungsfelder orientieren sich an deinem Live-Impact-Kompass. Die Skala ist hier bewusst konservativer kalibriert: +3 ist selten, 0 ist wirklich neutral.")
 
 score_cols = st.columns(5)
 for idx, (name, val) in enumerate(impact.items()):
-    tooltip = SCORE_TOOLTIPS.get(name, "")
-    score_cols[idx].markdown(
-        f"""
-        <div class="score-box">
-            <div>
-                <span title="{tooltip}" style="cursor:help; text-decoration:underline dotted;">{name} ℹ️</span>
-            </div>
-            <div class="score-num" title="{tooltip}">{val}</div>
-            <div class="muted" title="{tooltip}">Skala -3 bis +3</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    with score_cols[idx]:
+        top = st.columns([0.82, 0.18])
+        with top[0]:
+            st.markdown(f"**{name}**")
+        with top[1]:
+            with st.popover("ℹ️"):
+                st.write(IMPACT_HELP[name])
 
-st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung basiert auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
+        color = score_color(val)
+        arrow = score_arrow(val)
+        st.markdown(
+            f"""
+            <div class="score-card" style="border-left: 6px solid {color};">
+                <div class="score-big" style="color:{color};">{val}<span class="score-arrow" style="color:{color};">{arrow}</span></div>
+                <div class="score-sub">{score_label(val)}</div>
+                <div class="score-sub" style="margin-top:.35rem;">Ampel: {'grün' if val >= 1 else 'gelb' if val == 0 else 'rot'}</div>
+                <div class="score-sub">Skala -3 bis +3</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 left, right = st.columns([1.25, 1.0], gap="large")
 
@@ -982,12 +975,12 @@ with left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Live-Feed")
     i1, i2, i3 = st.columns(3)
-    i1.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)}")
-    i2.info(f"Gesamt: {len(comment_df)}")
-    i3.info(f"Dein Filter-User: {user_filter}")
+    i1.info(f"Host: {st.session_state.username or '-'}")
+    i2.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)} - neueste oben")
+    i3.info(f"Gesamt: {len(comment_df)}")
 
     if not filtered_df.empty:
-        render_df = filtered_df.sort_values("dt", ascending=True).tail(DISPLAY_LIMIT)
+        render_df = filtered_df.sort_values("dt", ascending=False).head(DISPLAY_LIMIT)
         for _, row in render_df.iterrows():
             badges = []
             if row["is_question"]:
@@ -1047,13 +1040,11 @@ with right:
         )
     else:
         st.info("Noch keine Zeitreihe vorhanden.")
-    st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
-    st.caption(GLOBAL_TOOLTIPS["salienz"])
+    st.info(salience_warning(comment_df, scores_df))
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
-    st.caption("Wort- und Emoji-Häufigkeiten helfen dabei zu sehen, welche Themen und emotionalen Marker den Chat prägen.")
     c1, c2 = st.columns(2)
     words_df = top_words(filtered_df if not filtered_df.empty else comment_df)
     emojis_df = top_emojis(filtered_df if not filtered_df.empty else comment_df)
@@ -1083,7 +1074,7 @@ with l2:
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
+    st.subheader("Wiederholungen / mögliche Spam-Muster")
     rep_df = repeated_messages(comment_df, min_count=2)
     if not rep_df.empty:
         st.dataframe(rep_df, use_container_width=True, hide_index=True)
@@ -1093,32 +1084,29 @@ with l2:
 
 with r2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
+    st.subheader("Auffällige User / Diskursverschiebung")
     if not scores_df.empty:
         st.dataframe(scores_df.head(25), use_container_width=True, hide_index=True)
     else:
         st.info("Noch keine User-Scores verfügbar.")
-    st.caption(GLOBAL_TOOLTIPS["shift_score"])
+    st.caption("Shift-Score kombiniert Frequenz, Triggerbegriffe, Wiederholungen, Frage-Druck, Capslock und abwertende Marker.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Themencluster", help=GLOBAL_TOOLTIPS["cluster"])
+    st.subheader("Themencluster")
     if not clusters_df.empty:
         st.dataframe(clusters_df, use_container_width=True, hide_index=True)
     else:
         st.info("Für Themencluster werden mehr Chatdaten benötigt.")
-    st.caption(GLOBAL_TOOLTIPS["cluster"])
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.subheader("Rollenbild und Narrative")
-st.caption("Rollen: " + GLOBAL_TOOLTIPS["rollen"] + "  |  Narrative: " + GLOBAL_TOOLTIPS["narrative"])
 c1, c2 = st.columns(2)
 with c1:
     if roles:
         role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
         st.dataframe(role_df, use_container_width=True, hide_index=True)
-        st.caption(GLOBAL_TOOLTIPS["rollen"])
     else:
         st.info("Noch keine Rollenverteilung verfügbar.")
 with c2:
@@ -1126,30 +1114,16 @@ with c2:
     if narratives:
         for item in narratives:
             st.write(f"- {item}")
-        st.caption(GLOBAL_TOOLTIPS["narrative"])
     else:
         st.info("Noch keine stabilen Narrative erkannt.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
-report_text = board.get("report_text", "") if board else ""
-if report_text:
-    st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
-    st.caption(GLOBAL_TOOLTIPS["report"])
+st.subheader("Automatischer Report")
+if st.session_state.auto_report:
+    st.markdown(f'<div class="report-box">{st.session_state.auto_report}</div>', unsafe_allow_html=True)
 else:
-    st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
+    st.info("Noch kein Report erstellt. Nutze links in der Sidebar den Button 'Report erstellen'.")
 st.markdown("</div>", unsafe_allow_html=True)
 
-with st.sidebar:
-    st.divider()
-    st.subheader("Exporte")
-    if all_messages:
-        export_name = f"board_{board_id}"
-        st.download_button("TXT herunterladen", data=messages_to_txt(all_messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
-        st.download_button("CSV herunterladen", data=messages_to_csv_bytes(all_messages), file_name=f"{export_name}.csv", mime="text/csv", use_container_width=True)
-        st.download_button("JSON herunterladen", data=messages_to_json_bytes(all_messages), file_name=f"{export_name}.json", mime="application/json", use_container_width=True)
-        if report_text:
-            st.download_button("Report herunterladen", data=report_text, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
-
-st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
+st.caption("Verlauf bleibt nach Disconnect erhalten. Nur 'Reset' setzt die Session zurück. Sichtbar sind maximal die letzten 2000 Nachrichten, Exporte enthalten alles.")
