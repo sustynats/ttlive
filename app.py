@@ -82,14 +82,19 @@ EMOJI_PATTERN = re.compile(
 WORD_PATTERN = re.compile(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9_-]{2,}")
 UPPER_PATTERN = re.compile(r"[A-ZÄÖÜ]{4,}")
 
+IMPACT_HELP = {
+    "Diskurskultur": "Wie respektvoll und ausgewogen der Chat ist. Toxische Sprache, Capslock und Dominanz einzelner Stimmen drücken den Wert.",
+    "Salienz-Bewusstsein": "Ob Aufmerksamkeit durch wenige laute Trigger-Kommentare verzerrt wird oder relativ ausgewogen verteilt bleibt.",
+    "Verantwortung & Macht": "Wie stark einzelne Accounts oder aggressive Muster den Raum dominieren. Hohe Trigger- und Auffälligkeitswerte senken den Score.",
+    "Systemischer Impact": "Ob sich Polarisierung, enge Narrative und Themenverengung zeigen oder eher Differenzierung und Breite.",
+    "Emotionale Resonanz": "Wie sich der Chat emotional anfühlt. Zu viel Aggression senkt den Wert, konstruktive Beteiligung stabilisiert ihn."
+}
 
 def now_dt() -> datetime:
     return datetime.now(TZ)
 
-
 def now_ts() -> str:
     return now_dt().strftime("%Y-%m-%d %H:%M:%S")
-
 
 def normalize_username(username: str) -> str:
     username = username.strip()
@@ -99,34 +104,27 @@ def normalize_username(username: str) -> str:
         username = "@" + username
     return username
 
-
 def safe_slug(text: str) -> str:
     text = text.replace("@", "").strip()
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", text) or "chat"
 
-
 def make_export_base(username: str) -> str:
     return f"{safe_slug(username)}_{now_dt().strftime('%Y%m%d_%H%M%S')}"
-
 
 def append_txt(filepath: Path, line: str) -> None:
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-
 def append_jsonl(filepath: Path, payload: dict) -> None:
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
 
 def extract_words(text: str) -> list[str]:
     words = [w.lower() for w in WORD_PATTERN.findall(text)]
     return [w for w in words if w not in GERMAN_STOPWORDS and len(w) > 2]
 
-
 def extract_emojis(text: str) -> list[str]:
     return EMOJI_PATTERN.findall(text)
-
 
 def user_color(username: str) -> str:
     palette = [
@@ -136,7 +134,6 @@ def user_color(username: str) -> str:
     idx = int(hashlib.md5(username.encode("utf-8")).hexdigest(), 16) % len(palette)
     return palette[idx]
 
-
 def initials(name: str) -> str:
     parts = [p for p in re.split(r"\s+", str(name).strip()) if p]
     if not parts:
@@ -144,7 +141,6 @@ def initials(name: str) -> str:
     if len(parts) == 1:
         return parts[0][:2].upper()
     return (parts[0][:1] + parts[-1][:1]).upper()
-
 
 def elapsed_label(start_iso: str | None) -> str:
     if not start_iso:
@@ -160,7 +156,6 @@ def elapsed_label(start_iso: str | None) -> str:
         return f"{m:02d}:{s:02d}"
     except Exception:
         return "-"
-
 
 def safe_avatar_url(user_obj) -> str | None:
     candidates = ["avatar_thumb", "avatar_medium", "avatar_large", "profilePicture"]
@@ -180,7 +175,6 @@ def safe_avatar_url(user_obj) -> str | None:
         except Exception:
             pass
     return None
-
 
 def classify_message(text: str) -> dict:
     lowered = text.lower()
@@ -204,14 +198,12 @@ def classify_message(text: str) -> dict:
     features["tone"] = tone
     return features
 
-
 def clean_message_store(messages):
     cleaned = []
     for m in messages:
         if isinstance(m, dict) and {"timestamp", "type", "username", "text"}.issubset(set(m.keys())):
             cleaned.append(m)
     return cleaned
-
 
 def build_dataframe(messages) -> pd.DataFrame:
     messages = clean_message_store(messages)
@@ -237,28 +229,22 @@ def build_dataframe(messages) -> pd.DataFrame:
     df["minute"] = df["dt"].dt.floor("min")
     return df
 
-
 def render_message_text(row: dict) -> str:
     return f"{row['username']}: {row['text']} [{row['timestamp'][11:19]}]"
-
 
 def messages_to_txt(messages) -> str:
     messages = clean_message_store(messages)
     return "\n".join(render_message_text(m) for m in messages)
 
-
 def messages_to_csv_bytes(messages) -> bytes:
     return build_dataframe(messages).to_csv(index=False).encode("utf-8")
-
 
 def messages_to_json_bytes(messages) -> bytes:
     messages = clean_message_store(messages)
     return json.dumps(messages, ensure_ascii=False, indent=2).encode("utf-8")
 
-
 def get_comment_messages(messages):
     return [m for m in messages if isinstance(m, dict) and m.get("type") == "comment"]
-
 
 def summarize_heuristics(comment_df: pd.DataFrame) -> dict:
     if comment_df.empty:
@@ -277,20 +263,17 @@ def summarize_heuristics(comment_df: pd.DataFrame) -> dict:
         "avg_length": round(comment_df["text"].str.len().mean(), 1),
     }
 
-
 def top_words(comment_df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
     counter = Counter()
     for text in comment_df["text"].tolist():
         counter.update(extract_words(text))
     return pd.DataFrame([{"word": k, "count": v} for k, v in counter.most_common(n)])
 
-
 def top_emojis(comment_df: pd.DataFrame, n: int = 12) -> pd.DataFrame:
     counter = Counter()
     for text in comment_df["text"].tolist():
         counter.update(extract_emojis(text))
     return pd.DataFrame([{"emoji": k, "count": v} for k, v in counter.most_common(n)])
-
 
 def top_users(comment_df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
     if comment_df.empty:
@@ -303,7 +286,6 @@ def top_users(comment_df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
         .head(n)
     )
 
-
 def activity_per_minute(comment_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["minute", "messages"])
@@ -313,7 +295,6 @@ def activity_per_minute(comment_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(name="messages")
         .sort_values("minute")
     )
-
 
 def repeated_messages(comment_df: pd.DataFrame, min_count: int = 2) -> pd.DataFrame:
     if comment_df.empty:
@@ -328,7 +309,6 @@ def repeated_messages(comment_df: pd.DataFrame, min_count: int = 2) -> pd.DataFr
     rep = rep[rep["count"] >= min_count].sort_values("count", ascending=False)
     rep = rep.rename(columns={"text_norm": "text"})
     return rep.head(50)
-
 
 def user_scores(comment_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
@@ -385,7 +365,6 @@ def user_scores(comment_df: pd.DataFrame) -> pd.DataFrame:
         })
     return pd.DataFrame(rows).sort_values(["shift_score", "messages"], ascending=[False, False]).reset_index(drop=True)
 
-
 def build_clusters(comment_df: pd.DataFrame, max_clusters: int = 8) -> pd.DataFrame:
     if not SKLEARN_AVAILABLE or comment_df.empty or len(comment_df) < 8:
         return pd.DataFrame(columns=["cluster", "label", "messages"])
@@ -415,7 +394,6 @@ def build_clusters(comment_df: pd.DataFrame, max_clusters: int = 8) -> pd.DataFr
     except Exception:
         return pd.DataFrame(columns=["cluster", "label", "messages"])
 
-
 def filtered_comment_df(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     if df.empty:
         return df
@@ -437,19 +415,7 @@ def filtered_comment_df(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         out = out[out["has_toxic_marker"]]
     return out
 
-
-# ---------- Impact-Kompass V2 ----------
-IMPACT_HELP = {
-    "Diskurskultur": "Wie respektvoll und ausgewogen der Chat ist. Toxische Sprache, Capslock und Dominanz einzelner Stimmen drücken den Wert.",
-    "Salienz-Bewusstsein": "Ob Aufmerksamkeit durch wenige laute Trigger-Kommentare verzerrt wird oder relativ ausgewogen verteilt bleibt.",
-    "Verantwortung & Macht": "Wie stark einzelne Accounts oder aggressive Muster den Raum dominieren. Hohe Trigger- und Auffälligkeitswerte senken den Score.",
-    "Systemischer Impact": "Ob sich Polarisierung, enge Narrative und Themenverengung zeigen oder eher Differenzierung und Breite.",
-    "Emotionale Resonanz": "Wie sich der Chat emotional anfühlt. Zu viel Aggression senkt den Wert, konstruktive Beteiligung stabilisiert ihn."
-}
-
-
 def calibrate_band(raw_score: float) -> int:
-    # conservative thresholds so +3 is rare
     if raw_score >= 0.88:
         return 3
     if raw_score >= 0.75:
@@ -464,29 +430,22 @@ def calibrate_band(raw_score: float) -> int:
         return -2
     return -3
 
-
 def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame) -> dict:
     if comment_df.empty:
         return {name: 0 for name in IMPACT_HELP}
-
     toxic = float(comment_df["has_toxic_marker"].mean())
     trigger = float(comment_df["has_trigger"].mean())
     questions = float(comment_df["is_question"].mean())
     caps = float(comment_df["has_caps"].mean())
     avg_len = min(float(comment_df["text"].str.len().mean()) / 110.0, 1.0)
     emoji_balance = min(float(comment_df["emoji_count"].mean()) / 2.5, 1.0)
-
     user_counts = comment_df.groupby("username").size()
     concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
-
     cluster_top = 0.0
     if not clusters_df.empty and clusters_df["messages"].sum() > 0:
         cluster_top = float(clusters_df["messages"].max() / clusters_df["messages"].sum())
-
     flagged_ratio = float((scores_df["shift_score"] >= 45).mean()) if not scores_df.empty else 0.0
     severe_ratio = float((scores_df["shift_score"] >= 65).mean()) if not scores_df.empty else 0.0
-
-    # Higher is better, but conservative and punitive on imbalance/trigger patterns
     raw = {
         "Diskurskultur": (
             0.38 * (1 - toxic) +
@@ -523,7 +482,6 @@ def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df
     }
     return {k: calibrate_band(max(0.0, min(v, 1.0))) for k, v in raw.items()}
 
-
 def score_label(score: int) -> str:
     mapping = {
         3: "sehr stark",
@@ -535,7 +493,6 @@ def score_label(score: int) -> str:
         -3: "stark kritisch",
     }
     return mapping.get(score, "neutral")
-
 
 def score_color(score: int) -> str:
     mapping = {
@@ -549,7 +506,6 @@ def score_color(score: int) -> str:
     }
     return mapping.get(score, "#94a3b8")
 
-
 def score_arrow(score: int) -> str:
     if score >= 2:
         return "▲"
@@ -560,7 +516,6 @@ def score_arrow(score: int) -> str:
     if score == -1:
         return "↘"
     return "▼"
-
 
 def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
     if comment_df.empty:
@@ -582,12 +537,10 @@ def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
         out.append("Kulturkampf- und Identitätsnarrative")
     return out[:5]
 
-
 def role_summary(scores_df: pd.DataFrame) -> dict:
     if scores_df.empty:
         return {}
     return scores_df["role"].value_counts().to_dict()
-
 
 def salience_warning(comment_df: pd.DataFrame, scores_df: pd.DataFrame) -> str:
     if comment_df.empty:
@@ -603,33 +556,27 @@ def salience_warning(comment_df: pd.DataFrame, scores_df: pd.DataFrame) -> str:
         return "Hinweis: Einzelne sehr aktive Accounts prägen die Wahrnehmung überproportional."
     return "Keine starke Salienz-Drift erkennbar."
 
-
 def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict) -> str:
     if comment_df.empty:
         return "Es gibt noch keine Chatdaten für einen Report."
-
     summary = summarize_heuristics(comment_df)
     top_words_df = top_words(comment_df, n=12)
     top_users_df = top_users(comment_df, n=10)
     activity_df = activity_per_minute(comment_df)
     rep_df = repeated_messages(comment_df, min_count=2).head(8)
     narratives = narrative_candidates(comment_df)
-
     peak_text = "Kein Aktivitätspeak erkennbar."
     if not activity_df.empty:
         peak_row = activity_df.sort_values("messages", ascending=False).iloc[0]
         peak_time = pd.to_datetime(peak_row["minute"]).strftime("%H:%M")
         peak_text = f"Der stärkste Peak lag um {peak_time} Uhr mit {int(peak_row['messages'])} Nachrichten in einer Minute."
-
     cluster_text = "Es konnten noch keine stabilen Themencluster gebildet werden."
     if not clusters_df.empty:
         lines = [f"- {row['label']} ({int(row['messages'])} Nachrichten)" for _, row in clusters_df.head(5).iterrows()]
         cluster_text = "Dominante Cluster:\n" + "\n".join(lines)
-
     narrative_text = "Noch keine klaren wiederkehrenden Narrative erkennbar."
     if narratives:
         narrative_text = "Auffällige Narrative:\n" + "\n".join(f"- {x}" for x in narratives)
-
     suspicious_text = "Noch keine auffälligen User-Muster erkennbar."
     if not scores_df.empty:
         flagged = scores_df[scores_df["shift_score"] >= 45].head(8)
@@ -644,20 +591,17 @@ def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame
                 + "\nDiese Hinweise deuten auf überdurchschnittliche Aktivität, Triggernutzung, Wiederholungen oder Frage-Druck hin, "
                   "sind aber kein Beweis für koordinierte oder absichtliche Manipulation."
             )
-
     repeated_text = "Keine auffälligen Wiederholungen erkannt."
     if not rep_df.empty:
         rep_lines = [f"- {row['username']}: \"{str(row['text'])[:100]}\" ({int(row['count'])}x)" for _, row in rep_df.iterrows()]
         repeated_text = "Wiederholungen / mögliche Spam-Muster:\n" + "\n".join(rep_lines)
-
     impact_text = "\n".join([f"- {k}: {v} ({score_label(v)})" for k, v in impact.items()])
     top_words_text = ", ".join(top_words_df["word"].head(10).tolist()) if not top_words_df.empty else "-"
     top_users_text = ", ".join([f"{r['username']} ({int(r['messages'])})" for _, r in top_users_df.head(8).iterrows()]) if not top_users_df.empty else "-"
     question_rate = (comment_df["is_question"].mean() * 100) if not comment_df.empty else 0
     trigger_rate = (comment_df["has_trigger"].mean() * 100) if not comment_df.empty else 0
     toxic_rate = (comment_df["has_toxic_marker"].mean() * 100) if not comment_df.empty else 0
-
-    report = f"""1. Kurzfazit
+    return f"""1. Kurzfazit
 
 Der Chat umfasste {summary['messages']} Nachrichten von {summary['users']} Usern.
 Fragequote: {question_rate:.1f} Prozent.
@@ -697,14 +641,11 @@ Die aktivsten User waren: {top_users_text}.
 Die Einschätzungen beruhen auf Heuristiken, Häufigkeiten, Wiederholungsmustern, Triggerbegriffen und einfachen Clustern.
 Sie zeigen Auffälligkeiten und Wahrscheinlichkeiten, aber keine sicheren Absichten, Identitäten oder Koordination.
 """
-    return report
-
 
 def persist_message(payload: dict) -> None:
     st.session_state.messages.append(payload)
     append_txt(st.session_state.export_txt_path, render_message_text(payload))
     append_jsonl(st.session_state.export_jsonl_path, payload)
-
 
 def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url: str | None = None) -> None:
     queue_obj.put({
@@ -714,7 +655,6 @@ def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url
         "text": text,
         "avatar_url": avatar_url,
     })
-
 
 def start_client(username: str, queue_obj):
     try:
@@ -740,7 +680,6 @@ def start_client(username: str, queue_obj):
     except Exception as e:
         queue_message(queue_obj, "error", "FEHLER", f"{type(e).__name__}: {e}")
 
-
 def init_state():
     defaults = {
         "chat_queue": queue.Queue(),
@@ -753,11 +692,11 @@ def init_state():
         "export_jsonl_path": EXPORT_DIR / "chat_placeholder.jsonl",
         "capture_started_at": None,
         "auto_report": "",
+        "board_id": "gzh9anu",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
 
 init_state()
 st.session_state.messages = clean_message_store(st.session_state.messages)
@@ -784,11 +723,6 @@ st.markdown("""
         background: rgba(255,255,255,.02);
         min-height: 172px;
     }
-    .score-title {
-        font-weight: 600;
-        line-height: 1.2;
-        margin-bottom: .45rem;
-    }
     .score-big {
         font-size: 2rem;
         font-weight: 800;
@@ -807,6 +741,14 @@ st.markdown("""
     }
     .avatar-fallback { width: 44px; height: 44px; border-radius: 999px; display:flex; align-items:center; justify-content:center; font-size:.82rem; font-weight:700; color:white; }
     .report-box { white-space: pre-wrap; line-height: 1.55; }
+    .status-box {
+        background: rgba(96,165,250,.12);
+        border: 1px solid rgba(96,165,250,.18);
+        border-radius: 16px;
+        padding: .75rem .9rem;
+        font-size: 0.95rem;
+        margin-bottom: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -815,7 +757,7 @@ st.markdown(f"""
     <h1 style="margin:0 0 .35rem 0;">💬 {APP_TITLE}</h1>
     <div class="muted">
         Kostenlose Version 2 mit Impact-Kompass, konservativer Scorecard,
-        Salienz-Hinweisen, Rollenbildern und Best-Effort-Profilbildern.
+        Salienz-Hinweisen, Rollenbildern, Sharing-/Status-Infos und Best-Effort-Profilbildern.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -833,15 +775,12 @@ with st.sidebar:
         try:
             username = normalize_username(username_input)
             st.session_state.username = username
-
             if not st.session_state.export_base:
                 st.session_state.export_base = make_export_base(username)
                 st.session_state.export_txt_path = EXPORT_DIR / f"{st.session_state.export_base}.txt"
                 st.session_state.export_jsonl_path = EXPORT_DIR / f"{st.session_state.export_base}.jsonl"
                 st.session_state.capture_started_at = now_dt().isoformat()
-
             st.session_state.chat_queue = queue.Queue()
-
             persist_message({
                 "timestamp": now_ts(),
                 "type": "system",
@@ -849,7 +788,6 @@ with st.sidebar:
                 "text": f"Mitschnitt gestartet für {username}",
                 "avatar_url": None,
             })
-
             thread = threading.Thread(
                 target=start_client,
                 args=(username, st.session_state.chat_queue),
@@ -892,7 +830,7 @@ with st.sidebar:
     run_report = st.button("📝 Report erstellen", use_container_width=True)
 
     st.divider()
-    st.subheader("Export")
+    st.subheader("Export & Sharing")
     if st.session_state.messages:
         export_name = st.session_state.export_base or "chat_export"
         st.download_button("TXT herunterladen", data=messages_to_txt(st.session_state.messages), file_name=f"{export_name}.txt", mime="text/plain", use_container_width=True)
@@ -943,6 +881,11 @@ k4.metric("Trigger", summary["trigger_msgs"])
 k5.metric("Abwertend", summary["toxic_msgs"])
 k6.metric("Laufzeit", elapsed_label(st.session_state.capture_started_at))
 
+s1, s2, s3 = st.columns(3)
+s1.markdown(f'<div class="status-box"><strong>Board:</strong> {st.session_state.board_id}</div>', unsafe_allow_html=True)
+s2.markdown(f'<div class="status-box"><strong>Host:</strong> {st.session_state.username or "-"}</div>', unsafe_allow_html=True)
+s3.markdown(f'<div class="status-box"><strong>Status:</strong> {"running" if st.session_state.started else "idle"}</div>', unsafe_allow_html=True)
+
 st.caption("Die fünf Wirkungsfelder orientieren sich an deinem Live-Impact-Kompass. Die Skala ist hier bewusst konservativer kalibriert: +3 ist selten, 0 ist wirklich neutral.")
 
 score_cols = st.columns(5)
@@ -954,7 +897,6 @@ for idx, (name, val) in enumerate(impact.items()):
         with top[1]:
             with st.popover("ℹ️"):
                 st.write(IMPACT_HELP[name])
-
         color = score_color(val)
         arrow = score_arrow(val)
         st.markdown(
@@ -992,7 +934,6 @@ with left:
             badge_html = "".join(badges)
             username_col = user_color(row["username"])
             ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
-
             avatar_col, content_col = st.columns([0.10, 0.90], gap="small")
             with avatar_col:
                 if row.get("avatar_url"):
