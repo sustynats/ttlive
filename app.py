@@ -1102,8 +1102,10 @@ for idx, (name, val) in enumerate(impact.items()):
         with top[0]:
             st.markdown(f"**{name}**")
         with top[1]:
-            with st.popover("?"):
-                st.write(SCORE_TOOLTIPS.get(name, ""))
+            st.markdown(
+                f'<span title="{SCORE_TOOLTIPS.get(name, "")}" style="cursor:help; font-weight:700; color:#6b7280; font-size:1.05rem;">❔</span>',
+                unsafe_allow_html=True
+            )
 
         color = score_color(val)
         arrow = score_arrow(val)
