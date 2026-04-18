@@ -640,7 +640,7 @@ def impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df
         "Systemischer Impact": 0.45 * (1 - trigger) + 0.20 * (1 - flagged_ratio) + 0.35 * (1 - cluster_top),
         "Emotionale Resonanz": 0.35 * (1 - toxic) + 0.20 * (1 - caps) + 0.20 * emoji_level + 0.25 * avg_len,
     }
-    return {k: score_to_band((v * 2) - 1) for k, v in raw.items()}
+    return {k: calibrate_band(max(0.0, min(v, 1.0))) for k, v in raw.items()}
 
 
 def narrative_candidates(comment_df: pd.DataFrame) -> list[str]:
