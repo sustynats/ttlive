@@ -1098,22 +1098,20 @@ explain_mode = st.toggle(
 score_cols = st.columns(5)
 for idx, (name, val) in enumerate(impact.items()):
     with score_cols[idx]:
-        top = st.columns([0.86, 0.14])
-        with top[0]:
-            st.markdown(f"**{name}**")
-        with top[1]:
-            st.markdown(
-                f'<span title="{SCORE_TOOLTIPS.get(name, "")}" style="cursor:help; font-weight:700; color:#6b7280; font-size:1.05rem;">❔</span>',
-                unsafe_allow_html=True
-            )
-
         color = score_color(val)
         arrow = score_arrow(val)
         ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
+
+        # Native Streamlit help icon, same pattern as above
+        st.metric(
+            label=name,
+            value=f"{val} {arrow}",
+            help=SCORE_TOOLTIPS.get(name, "")
+        )
+
         st.markdown(
             f"""
-            <div class="score-card" style="border-left: 6px solid {color};">
-                <div class="score-num" style="color:{color};">{val}<span class="score-arrow" style="color:{color};">{arrow}</span></div>
+            <div class="score-card" style="border-left: 6px solid {color}; margin-top: .25rem;">
                 <div class="score-sub">{score_label(val)}</div>
                 <div class="score-sub" style="margin-top:.35rem;">Ampel: {ampel}</div>
                 <div class="score-sub">Skala -3 bis +3</div>
