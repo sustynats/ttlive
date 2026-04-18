@@ -1089,17 +1089,22 @@ meta1.info(f"Board: {board_id}")
 meta2.info(f"Host: {host or '-'}")
 meta3.info(f"Status: {board['status'] if board else '-'}")
 
+explain_mode = st.toggle(
+    "Explain Mode für Wirkungsfelder",
+    value=False,
+    help="Zeigt unter jedem Wirkungsfeld eine kurze Begründung, warum der aktuelle Wert zustande kommt."
+)
+
 score_cols = st.columns(5)
 for idx, (name, val) in enumerate(impact.items()):
     with score_cols[idx]:
-        top = st.columns([0.82, 0.18])
+        top = st.columns([0.86, 0.14])
         with top[0]:
             st.markdown(f"**{name}**")
         with top[1]:
-            st.markdown(
-                f'<span title="{SCORE_TOOLTIPS.get(name, "")}" style="cursor:help; font-weight:700;">?</span>',
-                unsafe_allow_html=True
-            )
+            with st.popover("?"):
+                st.write(SCORE_TOOLTIPS.get(name, ""))
+
         color = score_color(val)
         arrow = score_arrow(val)
         ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
@@ -1114,6 +1119,9 @@ for idx, (name, val) in enumerate(impact.items()):
             """,
             unsafe_allow_html=True
         )
+
+        if explain_mode:
+            st.caption(impact_explanations.get(name, ""))
 
 st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung ist hier bewusst konservativer kalibriert: +3 ist selten. Die Werte basieren auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
 
@@ -1188,6 +1196,12 @@ with right:
         st.info("Noch keine Zeitreihe vorhanden.")
     st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
     st.caption(GLOBAL_TOOLTIPS["salienz"])
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Warum dieser Hinweis?")
+    st.write("Salienz beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Wenige sehr aktive Stimmen oder Trigger können den Diskurs überproportional prägen und dadurch Wahrnehmung verzerren.")
+    st.write("Der Hinweis oben ändert sich dynamisch mit dem Chat. Er reagiert vor allem auf Triggerquote, Konzentration auf wenige User und die Frage, ob Aufmerksamkeit auf wenige starke Impulse gezogen wird.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
