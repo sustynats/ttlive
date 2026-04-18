@@ -683,6 +683,90 @@ def salience_warning(comment_df: pd.DataFrame, scores_df: pd.DataFrame) -> str:
     return "Keine starke Salienz-Drift erkennbar."
 
 
+def metric_snapshot(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame) -> dict:
+    if comment_df.empty:
+        return {
+            "toxic": 0.0,
+            "trigger": 0.0,
+            "questions": 0.0,
+            "caps": 0.0,
+            "avg_len": 0.0,
+            "emoji_balance": 0.0,
+            "concentration": 0.0,
+            "cluster_top": 0.0,
+            "flagged_ratio": 0.0,
+            "severe_ratio": 0.0,
+        }
+    toxic = float(comment_df["has_toxic_marker"].mean())
+    trigger = float(comment_df["has_trigger"].mean())
+    questions = float(comment_df["is_question"].mean())
+    caps = float(comment_df["has_caps"].mean())
+    avg_len = min(float(comment_df["text"].str.len().mean()) / 110.0, 1.0)
+    emoji_balance = min(float(comment_df["emoji_count"].mean()) / 2.5, 1.0)
+    user_counts = comment_df.groupby("username").size()
+    concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
+    cluster_top = 0.0
+    if not clusters_df.empty and clusters_df["messages"].sum() > 0:
+        cluster_top = float(clusters_df["messages"].max() / clusters_df["messages"].sum())
+    flagged_ratio = float((scores_df["shift_score"] >= 45).mean()) if not scores_df.empty else 0.0
+    severe_ratio = float((scores_df["shift_score"] >= 65).mean()) if not scores_df.empty else 0.0
+    return {
+        "toxic": toxic,
+        "trigger": trigger,
+        "questions": questions,
+        "caps": caps,
+        "avg_len": avg_len,
+        "emoji_balance": emoji_balance,
+        "concentration": concentration,
+        "cluster_top": cluster_top,
+        "flagged_ratio": flagged_ratio,
+        "severe_ratio": severe_ratio,
+    }
+
+
+def explain_impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict) -> dict:
+    m = metric_snapshot(comment_df, scores_df, clusters_df)
+
+    def pct(v: float) -> str:
+        return f"{v * 100:.1f}%"
+
+    explanations = {
+        "Diskurskultur": (
+            f"Score {impact['Diskurskultur']}. "
+            f"Wichtig waren hier vor allem Abwertungsquote ({pct(m['toxic'])}), Capslock-Anteil ({pct(m['caps'])}) "
+            f"und die Konzentration auf wenige User ({pct(m['concentration'])}). "
+            f"Der Wert steigt, wenn der Chat respektvoller, weniger dominant und etwas dialogischer wirkt. "
+            f"Fragequote aktuell: {pct(m['questions'])}."
+        ),
+        "Salienz-Bewusstsein": (
+            f"Score {impact['Salienz-Bewusstsein']}. "
+            f"Dieser Wert reagiert besonders auf Triggerquote ({pct(m['trigger'])}), Konzentration auf wenige User ({pct(m['concentration'])}) "
+            f"und Themenverengung über dominante Cluster ({pct(m['cluster_top'])}). "
+            f"Je stärker Aufmerksamkeit durch wenige laute Impulse gebunden wird, desto niedriger fällt der Score aus."
+        ),
+        "Verantwortung & Macht": (
+            f"Score {impact['Verantwortung & Macht']}. "
+            f"Entscheidend waren der Anteil auffälliger Accounts ({pct(m['flagged_ratio'])}), stark auffälliger Accounts ({pct(m['severe_ratio'])}), "
+            f"die Abwertungsquote ({pct(m['toxic'])}) und die Konzentration ({pct(m['concentration'])}). "
+            f"Je dominanter einzelne Muster den Raum prägen, desto kritischer wird der Wert."
+        ),
+        "Systemischer Impact": (
+            f"Score {impact['Systemischer Impact']}. "
+            f"Hier fließen vor allem Triggerquote ({pct(m['trigger'])}), Themenverengung ({pct(m['cluster_top'])}), "
+            f"auffällige Accounts ({pct(m['flagged_ratio'])}) und die durchschnittliche Textsubstanz ein. "
+            f"Je breiter und weniger polarisierend der Diskurs, desto höher der Score."
+        ),
+        "Emotionale Resonanz": (
+            f"Score {impact['Emotionale Resonanz']}. "
+            f"Relevant sind Abwertungsquote ({pct(m['toxic'])}), Capslock-Anteil ({pct(m['caps'])}), "
+            f"Emojis bzw. emotionale Beteiligung ({m['emoji_balance'] * 100:.1f}% normiert), durchschnittliche Textlänge "
+            f"und Konzentration auf wenige Stimmen ({pct(m['concentration'])}). "
+            f"Der Wert steigt bei konstruktiver Beteiligung und sinkt bei Aggression oder Überhitzung."
+        ),
+    }
+    return explanations
+
+
 def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict) -> str:
     if comment_df.empty:
         return "Es gibt noch keine Chatdaten für einen Report."
@@ -982,6 +1066,7 @@ summary = summarize_heuristics(comment_df)
 scores_df = user_scores(comment_df)
 clusters_df = build_clusters(comment_df, max_clusters=8)
 impact = impact_scores(comment_df, scores_df, clusters_df)
+impact_explanations = explain_impact_scores(comment_df, scores_df, clusters_df, impact)
 roles = role_summary(scores_df)
 
 if not board_id:
@@ -1011,8 +1096,10 @@ for idx, (name, val) in enumerate(impact.items()):
         with top[0]:
             st.markdown(f"**{name}**")
         with top[1]:
-            with st.popover("ℹ️"):
-                st.write(SCORE_TOOLTIPS.get(name, ""))
+            st.markdown(
+                f'<span title="{SCORE_TOOLTIPS.get(name, "")}" style="cursor:help; font-weight:700;">?</span>',
+                unsafe_allow_html=True
+            )
         color = score_color(val)
         arrow = score_arrow(val)
         ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
@@ -1033,7 +1120,6 @@ st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv w
 left, right = st.columns([1.25, 1.0], gap="large")
 
 with left:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Live-Feed")
     i1, i2, i3 = st.columns(3)
     i1.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)} - neueste oben")
@@ -1084,10 +1170,9 @@ with left:
         with st.expander("Systemmeldungen", expanded=False):
             for row in system_rows[-50:]:
                 st.markdown(f"**{row['username']}**: {row['text']}  \n`{row['timestamp'][11:19]}`")
-    st.markdown("</div>", unsafe_allow_html=True)
+
 
 with right:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Dynamik")
     activity_df = activity_per_minute(comment_df)
     if not activity_df.empty:
@@ -1103,7 +1188,6 @@ with right:
         st.info("Noch keine Zeitreihe vorhanden.")
     st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
     st.caption(GLOBAL_TOOLTIPS["salienz"])
-    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
