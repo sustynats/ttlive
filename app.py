@@ -1606,74 +1606,7 @@ with right:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-with tabs[0]:
-    cA, cB = st.columns(2, gap="large")
-    with cA:
-        st.subheader("Aktivste User")
-        top_users_df = top_users(comment_df)
-        if not top_users_df.empty:
-            st.altair_chart(
-                alt.Chart(top_users_df).mark_bar().encode(
-                    x=alt.X("messages:Q", title="Nachrichten"),
-                    y=alt.Y("username:N", sort="-x", title="User"),
-                    tooltip=["username", "messages"]
-                ).properties(height=360),
-                use_container_width=True
-            )
-        else:
-            st.info("Noch keine User-Daten.")
-        st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
-        if not repeat_df_global.empty:
-            st.dataframe(repeat_df_global, use_container_width=True, hide_index=True, height=300)
-        else:
-            st.info("Bisher keine auffälligen Wiederholungen erkannt.")
-    with cB:
-        st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
-        if not scores_df.empty:
-            st.dataframe(scores_df.head(30), use_container_width=True, hide_index=True, height=360)
-        else:
-            st.info("Noch keine User-Scores verfügbar.")
-        st.subheader("Themencluster", help=GLOBAL_TOOLTIPS["cluster"])
-        if not clusters_df.empty:
-            st.dataframe(clusters_df, use_container_width=True, hide_index=True, height=300)
-        else:
-            st.info("Für Themencluster werden mehr Chatdaten benötigt.")
 
-with tabs[1]:
-    cN1, cN2 = st.columns(2, gap="large")
-    with cN1:
-        st.subheader("Rollenbild")
-        if roles:
-            role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
-            st.dataframe(role_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("Noch keine Rollenverteilung verfügbar.")
-        st.caption(GLOBAL_TOOLTIPS["rollen"])
-
-        st.subheader("Narrative")
-        narratives = narrative_candidates(comment_df)
-        if narratives:
-            for item in narratives:
-                st.write(f"- {item}")
-        else:
-            st.info("Noch keine stabilen Narrative erkannt.")
-        st.caption(GLOBAL_TOOLTIPS["narrative"])
-
-    with cN2:
-        st.subheader("Influence / Mention Map")
-        if not mention_df.empty:
-            st.dataframe(mention_df.head(25), use_container_width=True, hide_index=True, height=360)
-        else:
-            st.info("Noch keine Erwähnungsbeziehungen erkannt.")
-        st.caption("Diese Tabelle nähert Einflussbeziehungen über @Erwähnungen an. Sie ist kein vollständiger Antwortgraph, aber oft ein guter Proxy für Interaktion.")
-
-with tabs[2]:
-    st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
-    report_text = board.get("report_text", "") if board else ""
-    if report_text:
-        st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
-    else:
-        st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
 
 with st.sidebar:
     st.divider()
@@ -1687,12 +1620,13 @@ with st.sidebar:
             st.download_button("Report herunterladen", data=report_text, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
 
 st.divider()
-st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
 st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
 report_text = board.get("report_text", "") if board else ""
 if report_text:
     st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
 else:
     st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
+
+st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
 
 
