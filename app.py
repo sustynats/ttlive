@@ -1446,11 +1446,49 @@ st.markdown('<div class="card">', unsafe_allow_html=True)
 st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
 report_text = board.get("report_text", "") if board else ""
 maybe_run_auto_ai(comment_df, scores_df, clusters_df, impact, report_text)
+
+if ai_enabled():
+    st.markdown("### KI-Analyse")
+    ai_c1, ai_c2 = st.columns(2)
+    with ai_c1:
+        if st.button("🧠 KI-Snapshot jetzt", use_container_width=True):
+            try:
+                payload = build_ai_payload(comment_df, scores_df, clusters_df, impact, report_text, mode="snapshot")
+                prompt = build_ai_prompt(payload, mode="snapshot")
+                st.session_state["ai_snapshot_text"] = call_google_ai(prompt, st.session_state.get("ai_model", AI_DEFAULT_MODEL))
+                st.session_state["ai_last_run_label"] = f"Manueller Snapshot bei {len(comment_df)} Kommentaren"
+                st.session_state["ai_error"] = ""
+            except Exception as e:
+                st.session_state["ai_error"] = str(e)
+    with ai_c2:
+        if st.button("🧾 KI-Endreport jetzt", use_container_width=True):
+            try:
+                payload = build_ai_payload(comment_df, scores_df, clusters_df, impact, report_text, mode="endreport")
+                prompt = build_ai_prompt(payload, mode="endreport")
+                st.session_state["ai_endreport_text"] = call_google_ai(prompt, st.session_state.get("ai_model", AI_DEFAULT_MODEL))
+                st.session_state["ai_last_run_label"] = f"Manueller Endreport bei {len(comment_df)} Kommentaren"
+                st.session_state["ai_error"] = ""
+            except Exception as e:
+                st.session_state["ai_error"] = str(e)
+
+    if st.session_state.get("ai_last_run_label"):
+        st.caption(f"Letzter KI-Lauf: {st.session_state['ai_last_run_label']}")
+
+    if st.session_state.get("ai_snapshot_text"):
+        with st.expander("KI-Snapshot", expanded=True):
+            st.markdown(f'<div class="report-box">{st.session_state["ai_snapshot_text"]}</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("ai_endreport_text"):
+        with st.expander("KI-Endreport", expanded=False):
+            st.markdown(f'<div class="report-box">{st.session_state["ai_endreport_text"]}</div>', unsafe_allow_html=True)
+
 if report_text:
+    st.markdown("### Heuristik-Report")
     st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
     st.caption(GLOBAL_TOOLTIPS["report"])
 else:
     st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
+
 st.markdown("</div>", unsafe_allow_html=True)
 
 with st.sidebar:
