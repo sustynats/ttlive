@@ -779,8 +779,21 @@ def event_overview(messages) -> pd.DataFrame:
     msgs = clean_message_store(messages)
     if not msgs:
         return pd.DataFrame(columns=["event", "count"])
-    counts = Counter(m.get("type", "unknown") for m in msgs if m.get("type") not in {"comment", "system", "error"})
-    return pd.DataFrame([{"event": k, "count": v} for k, v in counts.items()]).sort_values("count", ascending=False)
+
+    counts = Counter(
+        m.get("type", "unknown")
+        for m in msgs
+        if m.get("type") not in {"comment", "system", "error"}
+    )
+
+    if not counts:
+        return pd.DataFrame(columns=["event", "count"])
+
+    return (
+        pd.DataFrame([{"event": k, "count": v} for k, v in counts.items()])
+        .sort_values("count", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 def recent_window_metrics(comment_df: pd.DataFrame, minutes: int = 5) -> dict:
