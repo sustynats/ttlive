@@ -69,6 +69,43 @@ GLOBAL_TOOLTIPS = {
     "report": "Automatisch generierte Zusammenfassung auf Basis von Chatmustern. Liefert Hinweise auf Dynamiken, keine endgültigen Bewertungen."
 }
 
+GLOSSARY = {
+    "Explain Mode": "Blendet zusätzliche Begründungen zu den fünf Wirkungsfeldern ein. Er erklärt, welche Messwerte den aktuellen Score besonders beeinflusst haben.",
+    "Live-Ampel": "Verdichtet die aktuelle Lage aus Wirkungsfeldern, Triggern, Abwertung, Dominanz, Wiederholungen und auffälligen Accounts zu 0-100 Punkten.",
+    "Shift-Score": GLOBAL_TOOLTIPS["shift_score"],
+    "Rolle normal": "Keine auffällige Kombination aus hoher Aktivität, Triggern, Wiederholungen, Frage-Druck oder Abwertung.",
+    "Rolle sehr aktiv": "Ein Account schreibt überdurchschnittlich viel, ohne stark abwertende oder triggernde Muster zu zeigen.",
+    "Rolle auffällig": "Ein Account zeigt erhöhte Werte bei Aktivität, Triggern, Wiederholungen, Fragen, Capslock oder Abwertung. Das ist ein Hinweis, kein Schuldnachweis.",
+    "Rolle stark auffällig": "Der kombinierte Shift-Score ist sehr hoch. Diese Accounts prägen den Chat stark und sollten kontextsensibel geprüft werden.",
+    "Narrativ-Verstärker": "Nutzt überdurchschnittlich oft Trigger- oder Deutungsbegriffe und kann dadurch bestimmte Frames verstärken.",
+    "Frage-Treiber": "Stellt auffällig viele Fragen. Das kann echte Nachfrage sein, aber auch themenlenkender Druck.",
+    "Archetyp": "Eine grobe Kommunikationsrolle aus den beobachteten Mustern, z. B. Echo/Repeater, Provokateur, Frage-Treiber oder aktiver Stammgast.",
+    "Aufmerksamkeitsanteil": "Anteil eines Users an allen Chatnachrichten. Hohe Aufmerksamkeit bedeutet nicht automatisch hohe inhaltliche Qualität.",
+    "Substanz-Score": "Heuristische Mischung aus durchschnittlicher Textlänge und sinntragenden Wörtern. Er schätzt, ob Beiträge eher inhaltlich ausgearbeitet sind.",
+    "Aufmerksamkeit minus Substanz": "Zeigt, ob ein Account mehr Raum einnimmt, als seine geschätzte Textsubstanz nahelegt. Positive Werte können auf Lautstärke ohne viel Inhalt hindeuten.",
+    "Gini": "Ungleichheitsmaß für die Verteilung der Nachrichten. 0 bedeutet gleich verteilt, höhere Werte bedeuten stärkere Dominanz weniger Accounts.",
+    "Top-1-Anteil": "Anteil der Nachrichten, der vom aktivsten Account stammt.",
+    "Top-3-Anteil": "Anteil der Nachrichten, der von den drei aktivsten Accounts stammt.",
+    "Dominanz": "Wie stark einzelne User oder Zeitfenster die sichtbare Dynamik prägen.",
+    "Trigger": GLOBAL_TOOLTIPS["trigger"],
+    "Trigger-Rate": "Anteil der Nachrichten mit Triggerbegriffen in einem Zeitfenster oder für einen User.",
+    "Abwertungsquote": "Anteil der Nachrichten mit abwertenden oder toxischen Sprachmarkern.",
+    "Fragequote": "Anteil der Nachrichten, die als Frage oder frageähnlicher Druck erkannt wurden.",
+    "Tonlage": "Heuristische Einordnung einzelner Nachrichten in neutral, fragend, polarisierend oder abwertend.",
+    "Kritische Momente": "Zeitfenster mit erhöhter Kombination aus Triggern, Abwertung, Capslock und Dominanz.",
+    "Eskalations-Score": "Score pro Zeitfenster aus Triggerquote, Abwertungsquote, Dominanz und Capslock.",
+    "Narrativ": GLOBAL_TOOLTIPS["narrative"],
+    "Narrativ-Drift": "Zeigt, wie sich dominante Begriffe und Deutungsmuster über Zeitfenster verschieben.",
+    "Themencluster": GLOBAL_TOOLTIPS["cluster"],
+    "Influencer-Map": "Netzwerk aus @-Erwähnungen. Es zeigt Bezugspunkte, Sender, Hubs und adressierte Accounts.",
+    "Begrüßungen / direkte Ansprache": "Spezialfall der Netzwerkansicht für Begrüßungen und direkte @-Ansprache.",
+    "KI-Snapshot": "Kurze KI-Lageeinschätzung auf Basis der Heuristiken und Chatbeispiele.",
+    "Host-Briefing": "Operative KI-Hilfe für Moderation: worauf achten, was fragen, was nicht verstärken.",
+    "Interventionen": "KI-Vorschläge für deeskalierende oder einordnende Moderationsreaktionen.",
+    "Narrativ-Deepdive": "Vertiefte KI-Analyse zu Deutungsmustern, Frames, Triggerketten und möglichen Gegen-Narrativen.",
+    "Risikoeinschätzung": "Vorsichtige KI-Einschätzung möglicher Diskursrisiken. Keine Tatsachenbehauptung über Absichten.",
+}
+
 COLUMN_MAPPING = {
     "timestamp": "Zeitstempel",
     "type": "Typ",
@@ -449,6 +486,13 @@ def display_table(df: pd.DataFrame, **kwargs):
 def render_text_box(text: str):
     safe_text = html.escape(str(text or ""))
     st.markdown(f'<div class="report-box">{safe_text}</div>', unsafe_allow_html=True)
+
+
+def render_glossary(keys: list[str] | None = None):
+    items = keys or list(GLOSSARY.keys())
+    rows = [{"Begriff": key, "Bedeutung": GLOSSARY[key]} for key in items if key in GLOSSARY]
+    if rows:
+        display_table(pd.DataFrame(rows), height=min(520, 70 + 34 * len(rows)))
 
 
 def messages_to_txt(messages) -> str:
@@ -2183,6 +2227,10 @@ def main():
         if st.session_state.get("ai_error"):
             st.error(st.session_state.get("ai_error"))
 
+        st.divider()
+        with st.expander("Begriffe & Hilfe", expanded=False):
+            render_glossary()
+
     if board_id and not st.session_state.get("ai_pending"):
         st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
@@ -2258,7 +2306,7 @@ def main():
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Nachrichten", summary["messages"])
     k2.metric("User", summary["users"])
-    k3.metric("Fragen", summary["questions"], help="Anzahl erkannter Fragen im Chat. Kann echte Verständnisfragen, rhetorische Fragen oder themenlenkende Fragen enthalten.")
+    k3.metric("Fragen", summary["questions"], help=GLOSSARY["Fragequote"])
     k4.metric("Trigger", summary["trigger_msgs"], help=GLOBAL_TOOLTIPS["trigger"])
     k5.metric("Abwertend", summary["toxic_msgs"], help=GLOBAL_TOOLTIPS["toxisch"])
     k6.metric("Laufzeit", elapsed_label(started_at))
@@ -2269,9 +2317,9 @@ def main():
     meta3.info(f"Status: {board['status'] if board else '-'}")
 
     explain_mode = st.toggle(
-        "Explain Mode für Wirkungsfelder",
+        "Begründungen zu Wirkungsfeldern anzeigen",
         value=False,
-        help="Zeigt unter jedem Wirkungsfeld eine kurze Begründung, warum der aktuelle Wert zustande kommt.",
+        help=GLOSSARY["Explain Mode"],
     )
 
     tab_overview, tab_live, tab_community, tab_analysis, tab_export = st.tabs([
@@ -2288,6 +2336,8 @@ def main():
         with o1:
             render_impact_overview(impact, impact_explanations if explain_mode else None)
             st.caption("Die Wirkungsfelder verdichten Chatqualität, Salienz, Dominanz, Trigger und emotionale Resonanz.")
+            with st.expander("Begriffe im Lagebild", expanded=False):
+                render_glossary(["Live-Ampel", "Kritische Momente", "Eskalations-Score", "Tonlage", "Aufmerksamkeitsanteil", "Substanz-Score"])
         with o2:
             st.markdown(
                 f"""
@@ -2467,7 +2517,7 @@ def main():
                     unsafe_allow_html=True,
                 )
 
-            st.subheader("Wirkungsfelder")
+            st.subheader("Wirkungsfelder", help="Fünf Scores von -3 bis +3. Der Begründungs-Schalter oberhalb zeigt, warum die Werte zustande kommen.")
             for name, val in impact.items():
                 color = score_color(val)
                 arrow = score_arrow(val)
@@ -2518,7 +2568,7 @@ def main():
             else:
                 st.info("Noch keine User-Daten.")
 
-            st.subheader("Auffällige User / Diskursverschiebung")
+            st.subheader("Auffällige User / Diskursverschiebung", help=GLOSSARY["Shift-Score"])
             if not scores_df.empty:
                 display_table(scores_df.head(20), height=280)
             else:
@@ -2532,16 +2582,18 @@ def main():
                 st.info("Bisher keine auffälligen Wiederholungen erkannt.")
             st.caption(GLOBAL_TOOLTIPS["wiederholungen"])
 
-            st.subheader("Rollenbild")
+            st.subheader("Rollenbild", help=GLOSSARY["Archetyp"])
             render_role_distribution(scores_df, height=220)
             if roles:
                 with st.expander("Rollen als Tabelle anzeigen", expanded=False):
                     role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
                     display_table(role_df, height=190)
             st.caption(GLOBAL_TOOLTIPS["rollen"])
+            with st.expander("Rollen & Scores erklärt", expanded=False):
+                render_glossary(["Shift-Score", "Rolle normal", "Rolle sehr aktiv", "Rolle auffällig", "Rolle stark auffällig", "Narrativ-Verstärker", "Frage-Treiber", "Archetyp"])
 
         with c2:
-            st.subheader("Influencer-Map")
+            st.subheader("Influencer-Map", help=GLOSSARY["Influencer-Map"])
             if not mention_df.empty:
                 render_relationship_network(mention_df, influencer_df, height=340)
                 with st.expander("Influencer-Tabelle anzeigen", expanded=False):
@@ -2559,7 +2611,7 @@ def main():
             else:
                 st.info("Noch keine Erwähnungsbeziehungen erkannt.")
 
-            st.subheader("Begrüßungen / direkte Ansprache")
+            st.subheader("Begrüßungen / direkte Ansprache", help=GLOSSARY["Begrüßungen / direkte Ansprache"])
             if not greeting_df.empty:
                 render_relationship_network(greeting_df, influencer_df, height=260)
                 with st.expander("Begrüßungen als Tabelle anzeigen", expanded=False):
@@ -2567,15 +2619,15 @@ def main():
             else:
                 st.caption("Noch keine klaren Begrüßungen mit @-Ansprache erkannt.")
 
-            st.subheader("Fairness & Dominanz")
+            st.subheader("Fairness & Dominanz", help="Zeigt, ob wenige Accounts den Chat überproportional prägen.")
             f1, f2 = st.columns(2)
-            f1.metric("Top 1 Anteil", f"{fairness['top1_share']*100:.1f}%")
-            f2.metric("Top 3 Anteil", f"{fairness['top3_share']*100:.1f}%")
+            f1.metric("Top 1 Anteil", f"{fairness['top1_share']*100:.1f}%", help=GLOSSARY["Top-1-Anteil"])
+            f2.metric("Top 3 Anteil", f"{fairness['top3_share']*100:.1f}%", help=GLOSSARY["Top-3-Anteil"])
             f3, f4 = st.columns(2)
-            f3.metric("Gini", f"{fairness['gini']:.2f}")
-            f4.metric("Dominanter User", fairness["dominant_user"])
+            f3.metric("Gini", f"{fairness['gini']:.2f}", help=GLOSSARY["Gini"])
+            f4.metric("Dominanter User", fairness["dominant_user"], help=GLOSSARY["Dominanz"])
 
-            st.subheader("Aufmerksamkeit vs Substanz")
+            st.subheader("Aufmerksamkeit vs Substanz", help="Vergleicht, wie viel Raum ein Account einnimmt und wie inhaltlich ausgearbeitet seine Nachrichten wirken.")
             if not attention_df.empty:
                 render_attention_scatter(attention_df, scores_df, height=280)
                 attention_show = attention_df.copy()
@@ -2586,6 +2638,8 @@ def main():
                     display_table(attention_show.head(15), height=250)
             else:
                 st.info("Noch keine Aufmerksamkeit-Substanz-Analyse verfügbar.")
+            with st.expander("Aufmerksamkeit/Substanz erklärt", expanded=False):
+                render_glossary(["Aufmerksamkeitsanteil", "Substanz-Score", "Aufmerksamkeit minus Substanz"])
 
         user_options = sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else []
         selected_user = st.selectbox("User-Detail", [""] + user_options)
@@ -2614,7 +2668,7 @@ def main():
             else:
                 st.info("Noch keine zusätzlichen Live-Events erfasst.")
 
-            st.subheader("Narrative")
+            st.subheader("Narrative", help=GLOSSARY["Narrativ"])
             narratives = narrative_candidates(comment_df)
             if narratives:
                 for item in narratives:
@@ -2623,7 +2677,7 @@ def main():
                 st.info("Noch keine stabilen Narrative erkannt.")
             st.caption(GLOBAL_TOOLTIPS["narrative"])
 
-            st.subheader("Themencluster")
+            st.subheader("Themencluster", help=GLOSSARY["Themencluster"])
             if not clusters_df.empty:
                 display_table(clusters_df, height=240)
             else:
@@ -2635,7 +2689,7 @@ def main():
             emojis_df = top_emojis(filtered_df if not filtered_df.empty else comment_df, n=10)
             display_table(emojis_df if not emojis_df.empty else pd.DataFrame(columns=["emoji", "count"]), height=250)
 
-            st.subheader("Narrativ-Drift")
+            st.subheader("Narrativ-Drift", help=GLOSSARY["Narrativ-Drift"])
             if not drift_df.empty:
                 drift_show = drift_df.copy()
                 drift_show["bucket"] = pd.to_datetime(drift_show["bucket"]).dt.strftime("%H:%M")
@@ -2653,7 +2707,7 @@ def main():
             else:
                 st.info("Noch keine Drift-Auswertung verfügbar.")
 
-            st.subheader("Trigger-Wirkung")
+            st.subheader("Trigger-Wirkung", help=GLOSSARY["Trigger-Rate"])
             if not trigger_df.empty:
                 render_trigger_impact(trigger_df, height=280)
                 trigger_show = trigger_df.copy()
@@ -2665,7 +2719,7 @@ def main():
             else:
                 st.info("Noch keine Trigger-Wirkung auswertbar.")
 
-            st.subheader("User-Archetypen")
+            st.subheader("User-Archetypen", help=GLOSSARY["Archetyp"])
             if not archetype_df.empty:
                 display_table(archetype_df.head(20), height=240)
             else:
@@ -2684,18 +2738,22 @@ def main():
                     display_table(chart_show.tail(20))
             else:
                 st.info("Noch keine Zeitfenster-Daten für kritische Momente.")
+            with st.expander("Kritische Momente erklärt", expanded=False):
+                render_glossary(["Kritische Momente", "Eskalations-Score", "Trigger-Rate", "Abwertungsquote", "Dominanz"])
         with dt2:
             fcols = st.columns(4)
-            fcols[0].metric("Top 1 Anteil", f"{fairness['top1_share']*100:.1f}%")
-            fcols[1].metric("Top 3 Anteil", f"{fairness['top3_share']*100:.1f}%")
-            fcols[2].metric("Gini", f"{fairness['gini']:.2f}")
-            fcols[3].metric("Dominanter User", fairness['dominant_user'])
+            fcols[0].metric("Top 1 Anteil", f"{fairness['top1_share']*100:.1f}%", help=GLOSSARY["Top-1-Anteil"])
+            fcols[1].metric("Top 3 Anteil", f"{fairness['top3_share']*100:.1f}%", help=GLOSSARY["Top-3-Anteil"])
+            fcols[2].metric("Gini", f"{fairness['gini']:.2f}", help=GLOSSARY["Gini"])
+            fcols[3].metric("Dominanter User", fairness['dominant_user'], help=GLOSSARY["Dominanz"])
             if not attention_df.empty:
                 render_attention_scatter(attention_df, scores_df, height=320)
                 with st.expander("Daten anzeigen", expanded=False):
                     display_table(attention_df.head(25))
             else:
                 st.info("Noch keine Fairness- oder Aufmerksamkeitsanalyse verfügbar.")
+            with st.expander("Fairness & Dominanz erklärt", expanded=False):
+                render_glossary(["Gini", "Top-1-Anteil", "Top-3-Anteil", "Dominanz", "Aufmerksamkeitsanteil", "Substanz-Score"])
         with dt3:
             dleft, dright = st.columns(2)
             with dleft:
@@ -2755,6 +2813,8 @@ def main():
 
         st.subheader("KI-Auswertung")
         st.caption("KI nutzt die heuristischen Scores, Netzwerkdaten, kritischen Zeitfenster und letzte Chatbeispiele. Chattexte werden als untrusted data behandelt.")
+        with st.expander("KI-Auswertungen erklärt", expanded=False):
+            render_glossary(["KI-Snapshot", "Host-Briefing", "Interventionen", "Narrativ-Deepdive", "Risikoeinschätzung"])
         if not ai_enabled():
             st.info("Aktiviere links in der Sidebar die KI-Auswertung, damit die Buttons ausführbar werden.")
         elif not get_google_api_key():
