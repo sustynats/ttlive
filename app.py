@@ -2181,18 +2181,6 @@ def main():
         if st.session_state.get("ai_error"):
             st.error(st.session_state.get("ai_error"))
 
-        st.divider()
-        st.subheader("4. Ansicht filtern")
-        search_text = st.text_input("Suchbegriff im Chat", placeholder="z. B. Merz")
-        tone_filter = st.selectbox(
-            "Tonlage",
-            ["Alle", "neutral", "fragend", "polarisierend", "abwertend"],
-            help="Heuristische Einordnung pro Nachricht. 'Polarisierend' basiert vor allem auf Triggerbegriffen, 'abwertend' auf beleidigenden oder aggressiven Markern.",
-        )
-        only_questions = st.checkbox("Nur Fragen")
-        only_triggers = st.checkbox("Nur Trigger")
-        only_toxic = st.checkbox("Nur abwertend/toxisch")
-
     if board_id:
         st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
@@ -2209,7 +2197,6 @@ def main():
 
     all_users = ["Alle"] + sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else ["Alle"]
     with st.sidebar:
-        user_filter = st.selectbox("Nur Nachrichten von", all_users, help="Filtert nur deine Ansicht. Der gemeinsame Datenstand bleibt unverändert.")
         if st.button(
             "Gemeinsamen Analysebericht erzeugen",
             use_container_width=True,
@@ -2224,13 +2211,15 @@ def main():
             update_board(board_id, report_text=report)
             st.success("Analysebericht im Raum gespeichert.")
 
+    default_user_filter = st.session_state.get("feed_user_filter", "Alle")
+    user_filter = default_user_filter if default_user_filter in all_users else "Alle"
     filters = {
-        "search": search_text,
+        "search": st.session_state.get("feed_search_text", ""),
         "user": user_filter,
-        "tone": tone_filter,
-        "only_questions": only_questions,
-        "only_triggers": only_triggers,
-        "only_toxic": only_toxic,
+        "tone": st.session_state.get("feed_tone_filter", "Alle"),
+        "only_questions": st.session_state.get("feed_only_questions", False),
+        "only_triggers": st.session_state.get("feed_only_triggers", False),
+        "only_toxic": st.session_state.get("feed_only_toxic", False),
     }
     filtered_df = filtered_comment_df(comment_df, filters)
     summary = summarize_heuristics(comment_df)
@@ -2336,6 +2325,52 @@ def main():
         left, right = st.columns([1.45, 0.95], gap="large")
         with left:
             st.subheader("Live-Feed")
+            st.caption("Diese Filter verändern nur deinen Feed. Der gemeinsame Analyse-Raum und die Auswertungen bleiben unverändert.")
+            f1, f2, f3 = st.columns([1.2, 0.9, 0.9])
+            with f1:
+                st.text_input("Suchbegriff", placeholder="z. B. Merz", key="feed_search_text")
+            with f2:
+                st.selectbox(
+                    "User",
+                    all_users,
+                    index=all_users.index(user_filter) if user_filter in all_users else 0,
+                    key="feed_user_filter",
+                )
+            with f3:
+                st.selectbox(
+                    "Tonlage",
+                    ["Alle", "neutral", "fragend", "polarisierend", "abwertend"],
+                    key="feed_tone_filter",
+                    help="Heuristische Einordnung pro Nachricht.",
+                )
+            q1, q2, q3, q4 = st.columns([0.85, 0.85, 1.05, 1])
+            with q1:
+                st.checkbox("Fragen", key="feed_only_questions")
+            with q2:
+                st.checkbox("Trigger", key="feed_only_triggers")
+            with q3:
+                st.checkbox("Abwertend/toxisch", key="feed_only_toxic")
+            with q4:
+                if st.button("Filter zurücksetzen", use_container_width=True):
+                    st.session_state["feed_search_text"] = ""
+                    st.session_state["feed_user_filter"] = "Alle"
+                    st.session_state["feed_tone_filter"] = "Alle"
+                    st.session_state["feed_only_questions"] = False
+                    st.session_state["feed_only_triggers"] = False
+                    st.session_state["feed_only_toxic"] = False
+                    st.rerun()
+
+            filters = {
+                "search": st.session_state.get("feed_search_text", ""),
+                "user": st.session_state.get("feed_user_filter", "Alle"),
+                "tone": st.session_state.get("feed_tone_filter", "Alle"),
+                "only_questions": st.session_state.get("feed_only_questions", False),
+                "only_triggers": st.session_state.get("feed_only_triggers", False),
+                "only_toxic": st.session_state.get("feed_only_toxic", False),
+            }
+            filtered_df = filtered_comment_df(comment_df, filters)
+            user_filter = filters["user"]
+
             i1, i2, i3, i4 = st.columns(4)
             i1.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)} - neueste oben")
             i2.info(f"Gesamt: {len(comment_df)}")
@@ -2714,7 +2749,7 @@ def main():
         export3.download_button("JSON exportieren", data=messages_to_json_bytes(all_messages), file_name=f"tiktok-live-{board_id}.json", mime="application/json", use_container_width=True)
 
         st.subheader("Datenvorschau")
-        display_table(filtered_df.head(100) if not filtered_df.empty else comment_df.head(100), height=320)
+        display_table(comment_df.head(100), height=320)
 
         st.subheader("KI-Auswertung")
         st.caption("KI nutzt die heuristischen Scores, Netzwerkdaten, kritischen Zeitfenster und letzte Chatbeispiele. Chattexte werden als untrusted data behandelt.")
