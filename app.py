@@ -1240,9 +1240,8 @@ with st.sidebar:
     board_id = st.session_state.board_id
     share_url = f"{APP_BASE_URL}?board={board_id}" if board_id else APP_BASE_URL
     st.text_input("Share-URL", value=share_url, help="Diese URL teilen. Alle sehen denselben Datenstand.")
-    st.caption("Filter, Suche und persönliche Ansichten bleiben lokal pro Nutzerin bzw. Nutzer.")
-
-    st.divider()
+   st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
+st.divider()
     st.header("Live starten")
     username_input = st.text_input("TikTok Username", placeholder="@username")
     if st.button("▶ Mitschnitt für dieses Dashboard starten", use_container_width=True, disabled=not board_id):
