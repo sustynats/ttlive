@@ -39,7 +39,7 @@ except Exception:
 APP_TITLE = "TikTok Live Impact Monitor V2"
 TZ = ZoneInfo("Europe/Berlin")
 DISPLAY_LIMIT = 2000
-AUTO_REFRESH_MS = 2000
+AUTO_REFRESH_MS = 8000
 DATA_DIR = Path("shared_data")
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "board_store.sqlite3"
@@ -2082,6 +2082,7 @@ def init_state():
         "ai_pending": None,
         "ai_connection_status": "",
         "ai_error": "",
+        "auto_refresh_enabled": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2092,6 +2093,8 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
     init_db()
     init_state()
+    if st.session_state.get("ai_pending"):
+        st.session_state["ai_pending"] = None
 
     qp = st.query_params
     query_board = qp.get("board")
@@ -2227,6 +2230,7 @@ def main():
                 )
                 thread.start()
                 st.session_state.listener_thread = thread
+                st.session_state["auto_refresh_enabled"] = True
                 st.success(f"Livechat-Aufzeichnung für {username} gestartet.")
             except Exception as e:
                 st.error(str(e))
@@ -2234,6 +2238,12 @@ def main():
             st.caption("Aufzeichnung läuft in dieser Session. Eingehende Kommentare erscheinen automatisch im Live-Monitor.")
         elif board_id:
             st.caption("Bereit zum Starten, sobald ein TikTok-Account eingetragen ist.")
+        if board_id:
+            st.toggle(
+                "Live-Monitor automatisch aktualisieren",
+                key="auto_refresh_enabled",
+                help="Aktualisiert die App regelmäßig. Für Export, Import und KI-Auswertungen kannst du das ausschalten, damit der Reiter ruhig bleibt.",
+            )
 
         st.divider()
         st.subheader("3. KI-Unterstützung")
@@ -2250,7 +2260,7 @@ def main():
         with st.expander("Begriffe & Hilfe", expanded=False):
             render_glossary()
 
-    if board_id and not st.session_state.get("ai_pending"):
+    if board_id and st.session_state.get("auto_refresh_enabled") and not st.session_state.get("ai_pending"):
         st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
     while not st.session_state.chat_queue.empty():
@@ -2834,6 +2844,8 @@ def main():
         st.caption("KI nutzt die heuristischen Scores, Netzwerkdaten, kritischen Zeitfenster und letzte Chatbeispiele. Chattexte werden als untrusted data behandelt.")
         with st.expander("KI-Auswertungen erklärt", expanded=False):
             render_glossary(["KI-Snapshot", "Host-Briefing", "Interventionen", "Narrativ-Deepdive", "Risikoeinschätzung"])
+        if st.session_state.get("auto_refresh_enabled"):
+            st.warning("Der Live-Monitor aktualisiert gerade automatisch. Falls Export oder KI träge wirken, schalte links 'Live-Monitor automatisch aktualisieren' kurz aus.")
         if not ai_enabled():
             st.info("Aktiviere links in der Sidebar die KI-Auswertung, damit die Buttons ausführbar werden.")
         elif not get_google_api_key():
@@ -2848,6 +2860,7 @@ def main():
             if st.button("API-Verbindung testen", use_container_width=True, disabled=(not ai_enabled() or not bool(get_google_api_key()))):
                 try:
                     st.session_state["ai_error"] = ""
+                    st.session_state["auto_refresh_enabled"] = False
                     with st.spinner("Google API wird getestet ..."):
                         st.session_state["ai_connection_status"] = test_google_ai_connection()
                     st.success(st.session_state["ai_connection_status"])
@@ -2860,12 +2873,24 @@ def main():
                 st.caption(st.session_state["ai_connection_status"])
 
         def ai_action(label: str, mode: str, state_key: str):
-            disabled = not ai_enabled() or not bool(all_messages) or not bool(get_google_api_key()) or bool(st.session_state.get("ai_pending"))
+            disabled = not ai_enabled() or not bool(all_messages) or not bool(get_google_api_key())
             if st.button(label, use_container_width=True, disabled=disabled):
-                st.session_state["ai_error"] = ""
-                st.session_state["ai_pending"] = {"label": label, "mode": mode, "state_key": state_key}
-                st.session_state["ai_last_run_label"] = f"{label} gestartet ..."
-                st.rerun()
+                try:
+                    st.session_state["ai_error"] = ""
+                    st.session_state["auto_refresh_enabled"] = False
+                    st.session_state["ai_pending"] = {"label": label}
+                    with st.spinner(f"{label} wird erstellt ..."):
+                        st.session_state[state_key] = run_ai_analysis(
+                            mode, comment_df, scores_df, clusters_df, impact, report_text
+                        )
+                    st.session_state["ai_last_run_label"] = f"{label} bei {len(comment_df)} Nachrichten"
+                    st.session_state["ai_last_output_key"] = state_key
+                    st.success(f"{label} erstellt.")
+                except Exception as e:
+                    st.session_state["ai_error"] = str(e)
+                    st.error(f"{label} fehlgeschlagen: {e}")
+                finally:
+                    st.session_state["ai_pending"] = None
 
         ai_col1, ai_col2, ai_col3 = st.columns(3)
         with ai_col1:
@@ -2877,24 +2902,6 @@ def main():
         with ai_col3:
             ai_action("Risikoeinschätzung", "risk_assessment", "ai_risk_assessment_text")
             ai_action("Endreport", "endreport", "ai_endreport_text")
-
-        pending = st.session_state.get("ai_pending")
-        if pending:
-            label = pending["label"]
-            try:
-                st.session_state["ai_error"] = ""
-                with st.spinner(f"{label} wird erstellt ..."):
-                    st.session_state[pending["state_key"]] = run_ai_analysis(
-                        pending["mode"], comment_df, scores_df, clusters_df, impact, report_text
-                    )
-                st.session_state["ai_last_run_label"] = f"{label} bei {len(comment_df)} Nachrichten"
-                st.session_state["ai_last_output_key"] = pending["state_key"]
-                st.session_state["ai_pending"] = None
-                st.success(f"{label} erstellt.")
-            except Exception as e:
-                st.session_state["ai_error"] = str(e)
-                st.session_state["ai_pending"] = None
-                st.error(f"{label} fehlgeschlagen: {e}")
 
         if st.session_state.get("ai_last_run_label"):
             st.caption(f"Letzte KI-Auswertung: {st.session_state['ai_last_run_label']}")
