@@ -1573,6 +1573,7 @@ fairness = fairness_metrics(comment_df)
 trigger_df = trigger_effect_analysis(comment_df)
 archetype_df = user_archetypes(comment_df, scores_df)
 attention_df = attention_vs_substance(comment_df)
+phase_label = phase_of_live(comment_df)
 
 if not board_id:
     st.info("Erstelle links ein neues Dashboard oder tritt einem bestehenden Board bei.")
