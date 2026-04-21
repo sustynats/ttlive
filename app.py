@@ -2309,7 +2309,11 @@ def main():
                 unsafe_allow_html=True,
             )
             for alert in alerts[:3]:
-                st.warning(f"{alert['title']}: {alert['detail']}") if alert["level"] in {"orange", "red"} else st.info(f"{alert['title']}: {alert['detail']}")
+                alert_text = f"{alert['title']}: {alert['detail']}"
+                if alert["level"] in {"orange", "red"}:
+                    st.warning(alert_text)
+                else:
+                    st.info(alert_text)
 
         st.subheader("Dynamik und Tonlage")
         d1, d2 = st.columns([1.25, 1])
