@@ -2016,6 +2016,7 @@ def init_state():
         "ai_risk_assessment_text": "",
         "ai_last_auto_count": 0,
         "ai_last_run_label": "",
+        "ai_last_output_key": "",
         "ai_error": "",
     }
     for key, value in defaults.items():
@@ -2298,11 +2299,7 @@ def main():
                 unsafe_allow_html=True,
             )
             for alert in alerts[:3]:
-                alert_text = f"{alert['title']}: {alert['detail']}"
-                if alert["level"] in {"orange", "red"}:
-                    st.warning(alert_text)
-                else:
-                    st.info(alert_text)
+                st.warning(f"{alert['title']}: {alert['detail']}") if alert["level"] in {"orange", "red"} else st.info(f"{alert['title']}: {alert['detail']}")
 
         st.subheader("Dynamik und Tonlage")
         d1, d2 = st.columns([1.25, 1])
@@ -2753,13 +2750,23 @@ def main():
 
         st.subheader("KI-Auswertung")
         st.caption("KI nutzt die heuristischen Scores, Netzwerkdaten, kritischen Zeitfenster und letzte Chatbeispiele. Chattexte werden als untrusted data behandelt.")
+        if not ai_enabled():
+            st.info("Aktiviere links in der Sidebar die KI-Auswertung, damit die Buttons ausführbar werden.")
+        elif not get_google_api_key():
+            st.error("Kein GOOGLE_API_KEY gefunden. Setze den Key als Streamlit Secret oder Umgebungsvariable.")
+        elif not all_messages:
+            st.info("Noch keine Chatdaten vorhanden. Starte einen Livechat oder importiere eine Datei.")
+        else:
+            st.success("KI ist bereit.")
 
         def ai_action(label: str, mode: str, state_key: str):
             if st.button(label, use_container_width=True, disabled=(not ai_enabled() or not bool(all_messages))):
                 try:
                     st.session_state["ai_error"] = ""
-                    st.session_state[state_key] = run_ai_analysis(mode, comment_df, scores_df, clusters_df, impact, report_text)
+                    with st.spinner(f"{label} wird erstellt ..."):
+                        st.session_state[state_key] = run_ai_analysis(mode, comment_df, scores_df, clusters_df, impact, report_text)
                     st.session_state["ai_last_run_label"] = f"{label} bei {len(comment_df)} Nachrichten"
+                    st.session_state["ai_last_output_key"] = state_key
                     st.success("KI-Auswertung erstellt.")
                 except Exception as e:
                     st.session_state["ai_error"] = str(e)
@@ -2778,6 +2785,8 @@ def main():
 
         if st.session_state.get("ai_last_run_label"):
             st.caption(f"Letzte KI-Auswertung: {st.session_state['ai_last_run_label']}")
+        if st.session_state.get("ai_error"):
+            st.error(st.session_state["ai_error"])
         ai_outputs = [
             ("KI-Snapshot", "ai_snapshot_text"),
             ("Host-Briefing", "ai_host_briefing_text"),
@@ -2786,10 +2795,14 @@ def main():
             ("Risikoeinschätzung", "ai_risk_assessment_text"),
             ("KI-Endreport", "ai_endreport_text"),
         ]
+        visible_output = False
         for title, key in ai_outputs:
             if st.session_state.get(key):
-                with st.expander(title, expanded=(key == "ai_snapshot_text")):
+                visible_output = True
+                with st.expander(title, expanded=(key == st.session_state.get("ai_last_output_key"))):
                     render_text_box(st.session_state[key])
+        if not visible_output:
+            st.caption("Noch keine KI-Auswertung erzeugt.")
 
     st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
 
