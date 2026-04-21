@@ -1332,36 +1332,6 @@ explain_mode = st.toggle(
     help="Zeigt unter jedem Wirkungsfeld eine kurze Begründung, warum der aktuelle Wert zustande kommt."
 )
 
-score_cols = st.columns(5)
-for idx, (name, val) in enumerate(impact.items()):
-    with score_cols[idx]:
-        top = st.columns([0.86, 0.14])
-        with top[0]:
-            st.markdown(f"**{name}**")
-        with top[1]:
-            with st.popover("?"):
-                st.write(SCORE_TOOLTIPS.get(name, ""))
-
-        color = score_color(val)
-        arrow = score_arrow(val)
-        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
-        st.markdown(
-            f"""
-            <div class="score-card" style="border-left: 6px solid {color};">
-                <div class="score-num" style="color:{color};">{val}<span class="score-arrow" style="color:{color};">{arrow}</span></div>
-                <div class="score-sub">{score_label(val)}</div>
-                <div class="score-sub" style="margin-top:.35rem;">Ampel: {ampel}</div>
-                <div class="score-sub">Skala -3 bis +3</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        if explain_mode:
-            st.caption(impact_explanations.get(name, ""))
-
-st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung ist hier bewusst konservativer kalibriert: +3 ist selten. Die Werte basieren auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
-
 
 left, right = st.columns([1.45, 0.95], gap="large")
 
@@ -1463,14 +1433,18 @@ with right:
     for name, val in impact.items():
         color = score_color(val)
         arrow = score_arrow(val)
+        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
+
+        st.metric(
+            label=name,
+            value=f"{val} {arrow}",
+            help=SCORE_TOOLTIPS.get(name, "")
+        )
         st.markdown(
             f"""
-            <div class="ampel-card" style="border-left: 6px solid {color}; padding:.65rem .8rem;">
-                <div style="display:flex; justify-content:space-between; gap:.6rem;">
-                    <div style="font-weight:700;">{name}</div>
-                    <div style="font-weight:800; color:{color};">{val} {arrow}</div>
-                </div>
+            <div class="ampel-card" style="border-left: 6px solid {color}; padding:.55rem .8rem; margin-top:-.35rem;">
                 <div style="color:#94a3b8; font-size:.83rem;">{score_label(val)}</div>
+                <div style="color:#94a3b8; font-size:.83rem;">Ampel: {ampel}</div>
             </div>
             """,
             unsafe_allow_html=True
