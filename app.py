@@ -2083,6 +2083,7 @@ def init_state():
         "ai_connection_status": "",
         "ai_error": "",
         "auto_refresh_enabled": False,
+        "auto_refresh_toggle": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2095,6 +2096,7 @@ def main():
     init_state()
     if st.session_state.get("ai_pending"):
         st.session_state["ai_pending"] = None
+    st.session_state["auto_refresh_toggle"] = st.session_state.get("auto_refresh_enabled", False)
 
     qp = st.query_params
     query_board = qp.get("board")
@@ -2231,6 +2233,7 @@ def main():
                 thread.start()
                 st.session_state.listener_thread = thread
                 st.session_state["auto_refresh_enabled"] = True
+                st.session_state["auto_refresh_toggle"] = True
                 st.success(f"Livechat-Aufzeichnung für {username} gestartet.")
             except Exception as e:
                 st.error(str(e))
@@ -2241,7 +2244,10 @@ def main():
         if board_id:
             st.toggle(
                 "Live-Monitor automatisch aktualisieren",
-                key="auto_refresh_enabled",
+                key="auto_refresh_toggle",
+                on_change=lambda: st.session_state.update(
+                    auto_refresh_enabled=st.session_state.get("auto_refresh_toggle", False)
+                ),
                 help="Aktualisiert die App regelmäßig. Für Export, Import und KI-Auswertungen kannst du das ausschalten, damit der Reiter ruhig bleibt.",
             )
 
