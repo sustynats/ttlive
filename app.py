@@ -2017,6 +2017,7 @@ def init_state():
         "ai_last_auto_count": 0,
         "ai_last_run_label": "",
         "ai_last_output_key": "",
+        "ai_pending": None,
         "ai_error": "",
     }
     for key, value in defaults.items():
@@ -2182,7 +2183,7 @@ def main():
         if st.session_state.get("ai_error"):
             st.error(st.session_state.get("ai_error"))
 
-    if board_id:
+    if board_id and not st.session_state.get("ai_pending"):
         st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
     while not st.session_state.chat_queue.empty():
@@ -2299,7 +2300,11 @@ def main():
                 unsafe_allow_html=True,
             )
             for alert in alerts[:3]:
-                st.warning(f"{alert['title']}: {alert['detail']}") if alert["level"] in {"orange", "red"} else st.info(f"{alert['title']}: {alert['detail']}")
+                alert_text = f"{alert['title']}: {alert['detail']}"
+                if alert["level"] in {"orange", "red"}:
+                    st.warning(alert_text)
+                else:
+                    st.info(alert_text)
 
         st.subheader("Dynamik und Tonlage")
         d1, d2 = st.columns([1.25, 1])
@@ -2760,17 +2765,12 @@ def main():
             st.success("KI ist bereit.")
 
         def ai_action(label: str, mode: str, state_key: str):
-            if st.button(label, use_container_width=True, disabled=(not ai_enabled() or not bool(all_messages))):
-                try:
-                    st.session_state["ai_error"] = ""
-                    with st.spinner(f"{label} wird erstellt ..."):
-                        st.session_state[state_key] = run_ai_analysis(mode, comment_df, scores_df, clusters_df, impact, report_text)
-                    st.session_state["ai_last_run_label"] = f"{label} bei {len(comment_df)} Nachrichten"
-                    st.session_state["ai_last_output_key"] = state_key
-                    st.success("KI-Auswertung erstellt.")
-                except Exception as e:
-                    st.session_state["ai_error"] = str(e)
-                    st.error(str(e))
+            disabled = not ai_enabled() or not bool(all_messages) or not bool(get_google_api_key()) or bool(st.session_state.get("ai_pending"))
+            if st.button(label, use_container_width=True, disabled=disabled):
+                st.session_state["ai_error"] = ""
+                st.session_state["ai_pending"] = {"label": label, "mode": mode, "state_key": state_key}
+                st.session_state["ai_last_run_label"] = f"{label} gestartet ..."
+                st.rerun()
 
         ai_col1, ai_col2, ai_col3 = st.columns(3)
         with ai_col1:
@@ -2782,6 +2782,24 @@ def main():
         with ai_col3:
             ai_action("Risikoeinschätzung", "risk_assessment", "ai_risk_assessment_text")
             ai_action("Endreport", "endreport", "ai_endreport_text")
+
+        pending = st.session_state.get("ai_pending")
+        if pending:
+            label = pending["label"]
+            try:
+                st.session_state["ai_error"] = ""
+                with st.spinner(f"{label} wird erstellt ..."):
+                    st.session_state[pending["state_key"]] = run_ai_analysis(
+                        pending["mode"], comment_df, scores_df, clusters_df, impact, report_text
+                    )
+                st.session_state["ai_last_run_label"] = f"{label} bei {len(comment_df)} Nachrichten"
+                st.session_state["ai_last_output_key"] = pending["state_key"]
+                st.session_state["ai_pending"] = None
+                st.success(f"{label} erstellt.")
+            except Exception as e:
+                st.session_state["ai_error"] = str(e)
+                st.session_state["ai_pending"] = None
+                st.error(f"{label} fehlgeschlagen: {e}")
 
         if st.session_state.get("ai_last_run_label"):
             st.caption(f"Letzte KI-Auswertung: {st.session_state['ai_last_run_label']}")
