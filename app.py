@@ -18,12 +18,6 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
-try:
-    from TikTokLive.events import LikeEvent, GiftEvent, JoinEvent, ShareEvent
-    OPTIONAL_LIVE_EVENTS = True
-except Exception:
-    LikeEvent = GiftEvent = JoinEvent = ShareEvent = None
-    OPTIONAL_LIVE_EVENTS = False
 
 SKLEARN_AVAILABLE = True
 try:
@@ -773,218 +767,6 @@ def explain_impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clu
     return explanations
 
 
-
-
-def event_overview(messages) -> pd.DataFrame:
-    msgs = clean_message_store(messages)
-    if not msgs:
-        return pd.DataFrame(columns=["event", "count"])
-
-    counts = Counter(
-        m.get("type", "unknown")
-        for m in msgs
-        if m.get("type") not in {"comment", "system", "error"}
-    )
-
-    if not counts:
-        return pd.DataFrame(columns=["event", "count"])
-
-    return (
-        pd.DataFrame([{"event": k, "count": v} for k, v in counts.items()])
-        .sort_values("count", ascending=False)
-        .reset_index(drop=True)
-    )
-
-
-def recent_window_metrics(comment_df: pd.DataFrame, minutes: int = 5) -> dict:
-    if comment_df.empty or comment_df["dt"].isna().all():
-        return {"messages": 0, "trigger_rate": 0.0, "toxic_rate": 0.0, "question_rate": 0.0}
-    end = comment_df["dt"].max()
-    start = end - pd.Timedelta(minutes=minutes)
-    recent = comment_df[comment_df["dt"] >= start]
-    if recent.empty:
-        return {"messages": 0, "trigger_rate": 0.0, "toxic_rate": 0.0, "question_rate": 0.0}
-    return {
-        "messages": int(len(recent)),
-        "trigger_rate": float(recent["has_trigger"].mean()),
-        "toxic_rate": float(recent["has_toxic_marker"].mean()),
-        "question_rate": float(recent["is_question"].mean()),
-    }
-
-
-def compute_live_ampel(comment_df: pd.DataFrame, scores_df: pd.DataFrame, impact: dict) -> dict:
-    if comment_df.empty:
-        return {"score": 50, "label": "neutral", "color": "#f59e0b", "ampel": "gelb", "trend": "→"}
-    repeated_df = repeated_messages(comment_df, min_count=2)
-    repeat_pressure = min((repeated_df["count"].sum() if not repeated_df.empty else 0) / max(len(comment_df), 1), 1.0)
-    toxic = float(comment_df["has_toxic_marker"].mean())
-    trigger = float(comment_df["has_trigger"].mean())
-    caps = float(comment_df["has_caps"].mean())
-    user_counts = comment_df.groupby("username").size()
-    concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
-    flagged = float((scores_df["shift_score"] >= 45).mean()) if not scores_df.empty else 0.0
-    positive = (
-        0.22 * ((impact.get("Diskurskultur", 0) + 3) / 6) +
-        0.20 * ((impact.get("Salienz-Bewusstsein", 0) + 3) / 6) +
-        0.20 * ((impact.get("Verantwortung & Macht", 0) + 3) / 6) +
-        0.18 * ((impact.get("Systemischer Impact", 0) + 3) / 6) +
-        0.20 * ((impact.get("Emotionale Resonanz", 0) + 3) / 6)
-    )
-    pressure = 0.28 * toxic + 0.24 * trigger + 0.14 * concentration + 0.14 * repeat_pressure + 0.10 * caps + 0.10 * flagged
-    score = max(0, min(100, round(100 * (0.62 * positive + 0.38 * (1 - pressure)))))
-    if score >= 78:
-        label, color, ampel = "stabil", "#16a34a", "grün"
-    elif score >= 60:
-        label, color, ampel = "beobachten", "#84cc16", "gelb-grün"
-    elif score >= 42:
-        label, color, ampel = "angespannt", "#f59e0b", "gelb"
-    elif score >= 26:
-        label, color, ampel = "kritisch", "#f97316", "orange"
-    else:
-        label, color, ampel = "eskaliert", "#dc2626", "rot"
-
-    if comment_df["dt"].notna().any():
-        end = comment_df["dt"].max()
-        recent = comment_df[comment_df["dt"] >= end - pd.Timedelta(minutes=5)]
-        prev = comment_df[(comment_df["dt"] < end - pd.Timedelta(minutes=5)) & (comment_df["dt"] >= end - pd.Timedelta(minutes=10))]
-        recent_pressure = (float(recent["has_trigger"].mean()) if not recent.empty else 0) + (float(recent["has_toxic_marker"].mean()) if not recent.empty else 0)
-        prev_pressure = (float(prev["has_trigger"].mean()) if not prev.empty else 0) + (float(prev["has_toxic_marker"].mean()) if not prev.empty else 0)
-        if recent_pressure > prev_pressure + 0.08:
-            trend = "↘"
-        elif recent_pressure + 0.08 < prev_pressure:
-            trend = "↗"
-        else:
-            trend = "→"
-    else:
-        trend = "→"
-    return {"score": score, "label": label, "color": color, "ampel": ampel, "trend": trend}
-
-
-def compute_alerts(comment_df: pd.DataFrame, scores_df: pd.DataFrame, impact: dict) -> list[dict]:
-    alerts = []
-    if comment_df.empty:
-        return alerts
-
-    recent = recent_window_metrics(comment_df, minutes=5)
-    user_counts = comment_df.groupby("username").size()
-    concentration = float(user_counts.max() / user_counts.sum()) if not user_counts.empty else 0.0
-    repeat_df = repeated_messages(comment_df, min_count=3)
-    top_user = user_counts.idxmax() if not user_counts.empty else "-"
-    top_share = concentration * 100
-
-    if impact.get("Diskurskultur", 0) <= -1:
-        alerts.append({
-            "level": "red",
-            "title": "Diskurskultur kritisch",
-            "detail": "Der Gesamtwert der Diskurskultur ist unter den neutralen Bereich gefallen. Das deutet auf mehr Reibung, Dominanz oder Abwertung hin."
-        })
-    if recent["trigger_rate"] >= 0.22:
-        alerts.append({
-            "level": "orange",
-            "title": "Triggerquote erhöht",
-            "detail": f"In den letzten 5 Minuten waren {recent['trigger_rate']*100:.1f}% der Nachrichten triggerhaltig."
-        })
-    if recent["toxic_rate"] >= 0.08:
-        alerts.append({
-            "level": "red",
-            "title": "Abwertende Sprache steigt",
-            "detail": f"Im letzten Zeitfenster waren {recent['toxic_rate']*100:.1f}% der Nachrichten abwertend oder toxisch."
-        })
-    if concentration >= 0.18:
-        alerts.append({
-            "level": "yellow",
-            "title": "Dominanter Account",
-            "detail": f"{top_user} prägt aktuell etwa {top_share:.1f}% des Chats."
-        })
-    if not scores_df.empty and (scores_df["shift_score"] >= 65).any():
-        strongest = scores_df.sort_values("shift_score", ascending=False).iloc[0]
-        alerts.append({
-            "level": "orange",
-            "title": "Stark auffälliger Account",
-            "detail": f"{strongest['username']} hat aktuell den höchsten Shift-Score ({strongest['shift_score']})."
-        })
-    if not repeat_df.empty:
-        top_repeat = repeat_df.iloc[0]
-        alerts.append({
-            "level": "yellow",
-            "title": "Wiederholungsmuster erkannt",
-            "detail": f"{top_repeat['username']} wiederholt eine Nachricht auffällig oft ({int(top_repeat['count'])}x)."
-        })
-    if not alerts:
-        alerts.append({
-            "level": "green",
-            "title": "Keine akuten Warnsignale",
-            "detail": "Aktuell zeigen Trigger, Toxizität, Dominanz und Wiederholungen keine kritische Zuspitzung."
-        })
-    return alerts[:6]
-
-
-def narrative_drift(comment_df: pd.DataFrame, bucket: str = "5min") -> pd.DataFrame:
-    if comment_df.empty or comment_df["dt"].isna().all():
-        return pd.DataFrame(columns=["bucket", "label", "messages"])
-    df = comment_df.copy()
-    df["bucket"] = df["dt"].dt.floor(bucket)
-    rows = []
-    for bucket_val, group in df.groupby("bucket"):
-        words = Counter()
-        for txt in group["text"].astype(str):
-            words.update(extract_words(txt))
-        top = ", ".join([w for w, _ in words.most_common(3)]) if words else "kein klares Thema"
-        rows.append({"bucket": bucket_val, "label": top, "messages": int(len(group))})
-    out = pd.DataFrame(rows).sort_values("bucket")
-    return out
-
-
-def mention_edges(comment_df: pd.DataFrame) -> pd.DataFrame:
-    if comment_df.empty:
-        return pd.DataFrame(columns=["source", "target", "count"])
-    rows = []
-    pattern = re.compile(r"@([A-Za-z0-9_.]+)")
-    for _, row in comment_df.iterrows():
-        targets = pattern.findall(str(row["text"]))
-        for target in targets:
-            rows.append({"source": row["username"], "target": target, "count": 1})
-    if not rows:
-        return pd.DataFrame(columns=["source", "target", "count"])
-    df = pd.DataFrame(rows)
-    return df.groupby(["source", "target"], as_index=False)["count"].sum().sort_values("count", ascending=False)
-
-
-def user_detail_snapshot(comment_df: pd.DataFrame, username: str) -> dict:
-    if comment_df.empty or not username:
-        return {}
-    user_df = comment_df[comment_df["username"] == username].copy()
-    if user_df.empty:
-        return {}
-    return {
-        "messages": int(len(user_df)),
-        "trigger_rate": float(user_df["has_trigger"].mean()),
-        "toxic_rate": float(user_df["has_toxic_marker"].mean()),
-        "question_rate": float(user_df["is_question"].mean()),
-        "repeat_count": int(repeated_messages(user_df, min_count=2)["count"].sum()) if not repeated_messages(user_df, min_count=2).empty else 0,
-        "first_seen": user_df["dt"].min(),
-        "last_seen": user_df["dt"].max(),
-        "recent_messages": user_df.sort_values("dt", ascending=False).head(8)[["timestamp", "text"]].to_dict("records")
-    }
-
-
-def phase_of_live(comment_df: pd.DataFrame) -> str:
-    if comment_df.empty or comment_df["dt"].isna().all():
-        return "keine Daten"
-    activity = activity_per_minute(comment_df)
-    if activity.empty:
-        return "keine Daten"
-    recent = activity.tail(5)["messages"].mean()
-    overall = activity["messages"].mean()
-    early = activity.head(5)["messages"].mean()
-    if recent >= overall * 1.25:
-        return "Peak"
-    if recent <= overall * 0.75 and activity.shape[0] > 10:
-        return "Abklingen"
-    if early >= overall * 0.9 and activity.shape[0] <= 10:
-        return "Warmup"
-    return "laufende Debatte"
-
 def generate_rule_based_report(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict) -> str:
     if comment_df.empty:
         return "Es gibt noch keine Chatdaten für einen Report."
@@ -1091,7 +873,6 @@ def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url
     })
 
 
-
 def start_client(board_id: str, username: str, queue_obj):
     try:
         queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...")
@@ -1111,41 +892,6 @@ def start_client(board_id: str, username: str, queue_obj):
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
             queue_message(queue_obj, "system", "SYSTEM", "Verbindung getrennt - Verlauf bleibt erhalten")
-
-        if OPTIONAL_LIVE_EVENTS and LikeEvent is not None:
-            @client.on(LikeEvent)
-            async def on_like(event):
-                count = getattr(event, "count", None) or getattr(event, "like_count", None) or getattr(event, "total", None)
-                user = getattr(getattr(event, "user", None), "nickname", None) or getattr(getattr(event, "user", None), "unique_id", "Like")
-                txt = f"{user} hat geliked"
-                if count is not None:
-                    txt += f" ({count})"
-                queue_message(queue_obj, "like", user, txt)
-
-        if OPTIONAL_LIVE_EVENTS and JoinEvent is not None:
-            @client.on(JoinEvent)
-            async def on_join(event):
-                user = getattr(getattr(event, "user", None), "nickname", None) or getattr(getattr(event, "user", None), "unique_id", "Join")
-                queue_message(queue_obj, "join", user, f"{user} ist dem Live beigetreten")
-
-        if OPTIONAL_LIVE_EVENTS and ShareEvent is not None:
-            @client.on(ShareEvent)
-            async def on_share(event):
-                user = getattr(getattr(event, "user", None), "nickname", None) or getattr(getattr(event, "user", None), "unique_id", "Share")
-                queue_message(queue_obj, "share", user, f"{user} hat das Live geteilt")
-
-        if OPTIONAL_LIVE_EVENTS and GiftEvent is not None:
-            @client.on(GiftEvent)
-            async def on_gift(event):
-                user = getattr(getattr(event, "user", None), "nickname", None) or getattr(getattr(event, "user", None), "unique_id", "Gift")
-                gift = getattr(event, "gift", None)
-                gift_name = None
-                if gift is not None:
-                    gift_name = getattr(getattr(gift, "extended_gift", None), "name", None) or getattr(gift, "name", None)
-                txt = f"{user} hat ein Geschenk gesendet"
-                if gift_name:
-                    txt += f": {gift_name}"
-                queue_message(queue_obj, "gift", user, txt)
 
         client.run()
     except Exception as e:
@@ -1201,14 +947,6 @@ st.markdown("""
     .score-arrow { font-size: 1.05rem; font-weight: 700; margin-left: .2rem; }
     .avatar-fallback { width: 44px; height: 44px; border-radius: 999px; display:flex; align-items:center; justify-content:center; font-size:.82rem; font-weight:700; color:white; }
     .report-box { white-space: pre-wrap; line-height: 1.55; }
-    .sticky-panel { position: sticky; top: 0.75rem; max-height: calc(100vh - 1.5rem); overflow-y: auto; padding-right: 0.2rem; }
-    .ampel-card { border-radius: 18px; padding: 0.9rem 1rem; border: 1px solid rgba(148,163,184,.18); background: rgba(255,255,255,.02); margin-bottom: 0.8rem; }
-    .alert-card { border-radius: 14px; padding: 0.65rem 0.8rem; margin-bottom: 0.5rem; border: 1px solid rgba(148,163,184,.18); }
-    .heat-neutral { border-left: 5px solid #cbd5e1; background: rgba(255,255,255,.02); }
-    .heat-question { border-left: 5px solid #60a5fa; background: rgba(96,165,250,.05); }
-    .heat-trigger { border-left: 5px solid #f59e0b; background: rgba(245,158,11,.06); }
-    .heat-toxic { border-left: 5px solid #ef4444; background: rgba(239,68,68,.06); }
-    .heat-repeat { border-left: 5px solid #a855f7; background: rgba(168,85,247,.06); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1331,15 +1069,6 @@ impact = impact_scores(comment_df, scores_df, clusters_df)
 impact_explanations = explain_impact_scores(comment_df, scores_df, clusters_df, impact)
 roles = role_summary(scores_df)
 
-
-event_df = event_overview(all_messages)
-repeat_df_global = repeated_messages(comment_df, min_count=2)
-live_ampel = compute_live_ampel(comment_df, scores_df, impact)
-alerts = compute_alerts(comment_df, scores_df, impact)
-drift_df = narrative_drift(comment_df)
-mention_df = mention_edges(comment_df)
-phase_label = phase_of_live(comment_df)
-
 if not board_id:
     st.info("Erstelle links ein neues Dashboard oder tritt einem bestehenden Board bei.")
     st.stop()
@@ -1366,20 +1095,44 @@ explain_mode = st.toggle(
     help="Zeigt unter jedem Wirkungsfeld eine kurze Begründung, warum der aktuelle Wert zustande kommt."
 )
 
+score_cols = st.columns(5)
+for idx, (name, val) in enumerate(impact.items()):
+    with score_cols[idx]:
+        top = st.columns([0.86, 0.14])
+        with top[0]:
+            st.markdown(f"**{name}**")
+        with top[1]:
+            with st.popover("?"):
+                st.write(SCORE_TOOLTIPS.get(name, ""))
 
-left, right = st.columns([1.45, 0.95], gap="large")
+        color = score_color(val)
+        arrow = score_arrow(val)
+        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
+        st.markdown(
+            f"""
+            <div class="score-card" style="border-left: 6px solid {color};">
+                <div class="score-num" style="color:{color};">{val}<span class="score-arrow" style="color:{color};">{arrow}</span></div>
+                <div class="score-sub">{score_label(val)}</div>
+                <div class="score-sub" style="margin-top:.35rem;">Ampel: {ampel}</div>
+                <div class="score-sub">Skala -3 bis +3</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if explain_mode:
+            st.caption(impact_explanations.get(name, ""))
+
+st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung ist hier bewusst konservativer kalibriert: +3 ist selten. Die Werte basieren auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
+
+left, right = st.columns([1.25, 1.0], gap="large")
 
 with left:
     st.subheader("Live-Feed")
-    i1, i2, i3, i4 = st.columns(4)
+    i1, i2, i3 = st.columns(3)
     i1.info(f"Sichtbar: {min(len(filtered_df), DISPLAY_LIMIT)} - neueste oben")
     i2.info(f"Gesamt: {len(comment_df)}")
     i3.info(f"Dein Filter-User: {user_filter}")
-    i4.info(f"Phase: {phase_label}")
-
-    mention_repeat_users = set()
-    if not repeat_df_global.empty:
-        mention_repeat_users = set(repeat_df_global["username"].astype(str).tolist())
 
     if not filtered_df.empty:
         render_df = filtered_df.sort_values("dt", ascending=False).head(DISPLAY_LIMIT)
@@ -1391,25 +1144,14 @@ with left:
                 badges.append('<span class="pill pill-trigger">Trigger</span>')
             if row["has_toxic_marker"]:
                 badges.append('<span class="pill pill-toxic">Abwertend</span>')
-
-            heat_class = "heat-neutral"
-            if row["username"] in mention_repeat_users:
-                heat_class = "heat-repeat"
-            if row["is_question"]:
-                heat_class = "heat-question"
-            if row["has_trigger"]:
-                heat_class = "heat-trigger"
-            if row["has_toxic_marker"]:
-                heat_class = "heat-toxic"
-
             badge_html = "".join(badges)
             username_col = user_color(row["username"])
             ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
 
-            avatar_col, content_col = st.columns([0.09, 0.91], gap="small")
+            avatar_col, content_col = st.columns([0.10, 0.90], gap="small")
             with avatar_col:
                 if row.get("avatar_url"):
-                    st.image(row["avatar_url"], width=42)
+                    st.image(row["avatar_url"], width=44)
                 else:
                     st.markdown(
                         f'<div class="avatar-fallback" style="background:{username_col};">{initials(row["username"])}</div>',
@@ -1418,7 +1160,7 @@ with left:
             with content_col:
                 st.markdown(
                     f"""
-                    <div class="chat-item {heat_class}">
+                    <div class="chat-item">
                         <div class="chat-main">
                             <span style="color:{username_col}; font-weight:700;">{row['username']}</span>: {row['text']}
                         </div>
@@ -1437,116 +1179,46 @@ with left:
             for row in system_rows[-50:]:
                 st.markdown(f"**{row['username']}**: {row['text']}  \n`{row['timestamp'][11:19]}`")
 
+
 with right:
-    st.markdown('<div class="sticky-panel">', unsafe_allow_html=True)
-
-    st.subheader("Live-Lage")
-    st.markdown(
-        f"""
-        <div class="ampel-card" style="border-left: 8px solid {live_ampel['color']};">
-            <div style="font-size:0.86rem; color:#94a3b8;">Live-Ampel</div>
-            <div style="font-size:2rem; font-weight:800; color:{live_ampel['color']}; line-height:1.1;">{live_ampel['score']} {live_ampel['trend']}</div>
-            <div style="font-size:1rem; font-weight:700; color:{live_ampel['color']};">{live_ampel['label'].capitalize()} - {live_ampel['ampel']}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.caption("Die Live-Ampel fasst Diskurskultur, Salienz, Dominanz einzelner User, Wiederholungen, Trigger und Toxizität zu einer Gesamtlage zusammen.")
-
-    st.subheader("Warnungen")
-    color_map = {"green": "#16a34a", "yellow": "#eab308", "orange": "#f97316", "red": "#ef4444"}
-    for alert in alerts:
-        c = color_map.get(alert["level"], "#94a3b8")
-        st.markdown(
-            f"""
-            <div class="alert-card" style="border-left:5px solid {c};">
-                <div style="font-weight:700; color:{c}; margin-bottom:.15rem;">{alert['title']}</div>
-                <div style="font-size:.88rem; color:#475569;">{alert['detail']}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    st.subheader("Wirkungsfelder")
-    for name, val in impact.items():
-        color = score_color(val)
-        arrow = score_arrow(val)
-        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
-
-        st.metric(
-            label=name,
-            value=f"{val} {arrow}",
-            help=SCORE_TOOLTIPS.get(name, "")
-        )
-        st.markdown(
-            f"""
-            <div class="ampel-card" style="border-left: 6px solid {color}; padding:.55rem .8rem; margin-top:-.35rem;">
-                <div style="color:#94a3b8; font-size:.83rem;">{score_label(val)}</div>
-                <div style="color:#94a3b8; font-size:.83rem;">Ampel: {ampel}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        if explain_mode:
-            st.caption(impact_explanations.get(name, ""))
-
     st.subheader("Dynamik")
     activity_df = activity_per_minute(comment_df)
     if not activity_df.empty:
         st.altair_chart(
             alt.Chart(activity_df).mark_line(point=True).encode(
                 x=alt.X("minute:T", title="Zeit"),
-                y=alt.Y("messages:Q", title="Msgs/Min"),
+                y=alt.Y("messages:Q", title="Nachrichten/Minute"),
                 tooltip=["minute:T", "messages:Q"]
-            ).properties(height=180),
+            ).properties(height=250),
             use_container_width=True
         )
     else:
         st.info("Noch keine Zeitreihe vorhanden.")
-
     st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
+    st.caption(GLOBAL_TOOLTIPS["salienz"])
 
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Warum dieser Hinweis?")
+    st.write("Salienz beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Wenige sehr aktive Stimmen oder Trigger können den Diskurs überproportional prägen und dadurch Wahrnehmung verzerren.")
+    st.write("Der Hinweis oben ändert sich dynamisch mit dem Chat. Er reagiert vor allem auf Triggerquote, Konzentration auf wenige User und die Frage, ob Aufmerksamkeit auf wenige starke Impulse gezogen wird.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
+    st.caption("Wort- und Emoji-Häufigkeiten helfen dabei zu sehen, welche Themen und emotionalen Marker den Chat prägen.")
     c1, c2 = st.columns(2)
-    words_df = top_words(filtered_df if not filtered_df.empty else comment_df, n=10)
-    emojis_df = top_emojis(filtered_df if not filtered_df.empty else comment_df, n=10)
+    words_df = top_words(filtered_df if not filtered_df.empty else comment_df)
+    emojis_df = top_emojis(filtered_df if not filtered_df.empty else comment_df)
     with c1:
-        st.dataframe(words_df if not words_df.empty else pd.DataFrame(columns=["word", "count"]), use_container_width=True, hide_index=True, height=250)
+        st.dataframe(words_df if not words_df.empty else pd.DataFrame(columns=["word", "count"]), use_container_width=True, hide_index=True)
     with c2:
-        st.dataframe(emojis_df if not emojis_df.empty else pd.DataFrame(columns=["emoji", "count"]), use_container_width=True, hide_index=True, height=250)
+        st.dataframe(emojis_df if not emojis_df.empty else pd.DataFrame(columns=["emoji", "count"]), use_container_width=True, hide_index=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.subheader("Engagement / Events")
-    if not event_df.empty:
-        st.dataframe(event_df, use_container_width=True, hide_index=True, height=170)
-    else:
-        st.caption("Zusätzliche Live-Events wie Likes, Gifts, Joins oder Shares werden nur angezeigt, wenn die Bibliothek sie im Stream liefert.")
+l2, r2 = st.columns(2, gap="large")
 
-    st.subheader("Narrative Drift")
-    if not drift_df.empty:
-        drift_show = drift_df.copy()
-        drift_show["bucket"] = pd.to_datetime(drift_show["bucket"]).dt.strftime("%H:%M")
-        st.dataframe(drift_show.tail(12), use_container_width=True, hide_index=True, height=250)
-    else:
-        st.info("Noch keine Narrative-Drift verfügbar.")
-
-    st.subheader("User-Detailpanel")
-    detail_options = ["-"] + (top_users(comment_df, n=20)["username"].tolist() if not comment_df.empty else [])
-    selected_detail_user = st.selectbox("User-Analyse", detail_options, key="detail_user_select")
-    if selected_detail_user != "-":
-        snap = user_detail_snapshot(comment_df, selected_detail_user)
-        if snap:
-            d1, d2 = st.columns(2)
-            d1.metric("Msgs", snap["messages"])
-            d2.metric("Repeats", snap["repeat_count"])
-            d3, d4 = st.columns(2)
-            d3.metric("Trigger", f"{snap['trigger_rate']*100:.0f}%")
-            d4.metric("Fragen", f"{snap['question_rate']*100:.0f}%")
-            st.caption(f"Erste Aktivität: {snap['first_seen']} | Letzte Aktivität: {snap['last_seen']}")
-            st.write("Letzte Nachrichten")
-            recent_df = pd.DataFrame(snap["recent_messages"])
-            st.dataframe(recent_df if not recent_df.empty else pd.DataFrame(columns=["timestamp","text"]), use_container_width=True, hide_index=True, height=220)
-
+with l2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Aktivste User")
     top_users_df = top_users(comment_df)
     if not top_users_df.empty:
@@ -1555,58 +1227,73 @@ with right:
                 x=alt.X("messages:Q", title="Nachrichten"),
                 y=alt.Y("username:N", sort="-x", title="User"),
                 tooltip=["username", "messages"]
-            ).properties(height=280),
+            ).properties(height=340),
             use_container_width=True
         )
     else:
         st.info("Noch keine User-Daten.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
-    if not scores_df.empty:
-        st.dataframe(scores_df.head(20), use_container_width=True, hide_index=True, height=280)
-    else:
-        st.info("Noch keine User-Scores verfügbar.")
-
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
-    if not repeat_df_global.empty:
-        st.dataframe(repeat_df_global, use_container_width=True, hide_index=True, height=240)
+    rep_df = repeated_messages(comment_df, min_count=2)
+    if not rep_df.empty:
+        st.dataframe(rep_df, use_container_width=True, hide_index=True)
     else:
         st.info("Bisher keine auffälligen Wiederholungen erkannt.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
+with r2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
+    if not scores_df.empty:
+        st.dataframe(scores_df.head(25), use_container_width=True, hide_index=True)
+    else:
+        st.info("Noch keine User-Scores verfügbar.")
+    st.caption(GLOBAL_TOOLTIPS["shift_score"])
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Themencluster", help=GLOBAL_TOOLTIPS["cluster"])
     if not clusters_df.empty:
-        st.dataframe(clusters_df, use_container_width=True, hide_index=True, height=240)
+        st.dataframe(clusters_df, use_container_width=True, hide_index=True)
     else:
         st.info("Für Themencluster werden mehr Chatdaten benötigt.")
+    st.caption(GLOBAL_TOOLTIPS["cluster"])
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.subheader("Rollenbild")
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Rollenbild und Narrative")
+st.caption("Rollen: " + GLOBAL_TOOLTIPS["rollen"] + "  |  Narrative: " + GLOBAL_TOOLTIPS["narrative"])
+c1, c2 = st.columns(2)
+with c1:
     if roles:
         role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
-        st.dataframe(role_df, use_container_width=True, hide_index=True, height=190)
+        st.dataframe(role_df, use_container_width=True, hide_index=True)
+        st.caption(GLOBAL_TOOLTIPS["rollen"])
     else:
         st.info("Noch keine Rollenverteilung verfügbar.")
-    st.caption(GLOBAL_TOOLTIPS["rollen"])
-
-    st.subheader("Narrative")
+with c2:
     narratives = narrative_candidates(comment_df)
     if narratives:
         for item in narratives:
             st.write(f"- {item}")
+        st.caption(GLOBAL_TOOLTIPS["narrative"])
     else:
         st.info("Noch keine stabilen Narrative erkannt.")
-    st.caption(GLOBAL_TOOLTIPS["narrative"])
+st.markdown("</div>", unsafe_allow_html=True)
 
-    st.subheader("Influence / Mention Map")
-    if not mention_df.empty:
-        st.dataframe(mention_df.head(20), use_container_width=True, hide_index=True, height=260)
-    else:
-        st.info("Noch keine Erwähnungsbeziehungen erkannt.")
-    st.caption("Diese Tabelle nähert Einflussbeziehungen über @Erwähnungen an. Sie ist kein vollständiger Antwortgraph, aber oft ein guter Proxy für Interaktion.")
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
+report_text = board.get("report_text", "") if board else ""
+if report_text:
+    st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
+    st.caption(GLOBAL_TOOLTIPS["report"])
+else:
+    st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
+st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-
+report_text = board.get("report_text", "") if board else ""
 
 with st.sidebar:
     st.divider()
@@ -1619,14 +1306,4 @@ with st.sidebar:
         if report_text:
             st.download_button("Report herunterladen", data=report_text, file_name=f"{export_name}_report.txt", mime="text/plain", use_container_width=True)
 
-st.divider()
-st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
-report_text = board.get("report_text", "") if board else ""
-if report_text:
-    st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
-else:
-    st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
-
 st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
-
-
