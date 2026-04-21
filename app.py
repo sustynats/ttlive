@@ -8,6 +8,7 @@ import threading
 import hashlib
 import secrets
 import os
+import html
 import requests
 from collections import Counter
 from datetime import datetime
@@ -443,6 +444,11 @@ def display_table(df: pd.DataFrame, **kwargs):
     default_kwargs = {"use_container_width": True, "hide_index": True}
     default_kwargs.update(kwargs)
     st.dataframe(show_df, **default_kwargs)
+
+
+def render_text_box(text: str):
+    safe_text = html.escape(str(text or ""))
+    st.markdown(f'<div class="report-box">{safe_text}</div>', unsafe_allow_html=True)
 
 
 def messages_to_txt(messages) -> str:
@@ -1641,9 +1647,9 @@ def init_state():
 
 
 def main():
+    st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
     init_db()
     init_state()
-    st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
 
     qp = st.query_params
     query_board = qp.get("board")
@@ -1692,37 +1698,72 @@ def main():
     """, unsafe_allow_html=True)
 
     with st.sidebar:
-        st.header("Dashboard teilen")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Neues Dashboard", use_container_width=True):
-                new_board = create_board()
-                st.session_state.board_id = new_board
-                st.query_params["board"] = new_board
-                st.rerun()
-        with c2:
-            join_board = st.text_input("Board-ID", value=st.session_state.board_id or "", label_visibility="collapsed", placeholder="Board-ID")
-            if st.button("Beitreten", use_container_width=True) and join_board:
-                st.session_state.board_id = join_board.strip().lower()
-                st.query_params["board"] = st.session_state.board_id
-                st.rerun()
+        st.header("1. Analyse-Raum wählen")
+        st.caption("Ein Analyse-Raum sammelt die Chatdaten eines Lives. Du kannst einen neuen Raum öffnen oder eine vorhandene Board-ID eintragen.")
+        if st.button(
+            "Neuen Analyse-Raum erstellen",
+            use_container_width=True,
+            help="Erstellt eine neue Board-ID und eine teilbare URL für diese Live-Analyse.",
+        ):
+            new_board = create_board()
+            st.session_state.board_id = new_board
+            st.query_params["board"] = new_board
+            st.rerun()
+
+        join_board = st.text_input(
+            "Vorhandene Board-ID öffnen",
+            value=st.session_state.board_id or "",
+            placeholder="z. B. a1b2c3d4",
+            help="Nutze diese Eingabe, wenn dir jemand eine Board-ID geschickt hat oder du einen bestehenden Analyse-Raum wieder öffnen willst.",
+        )
+        if st.button(
+            "Analyse-Raum öffnen",
+            use_container_width=True,
+            disabled=not bool(join_board.strip()),
+            help="Lädt den Analyse-Raum mit dieser Board-ID.",
+        ):
+            st.session_state.board_id = join_board.strip().lower()
+            st.query_params["board"] = st.session_state.board_id
+            st.rerun()
 
         board_id = st.session_state.board_id
         share_url = f"{APP_BASE_URL}?board={board_id}" if board_id else APP_BASE_URL
-        st.text_input("Share-URL", value=share_url, help="Diese URL teilen. Alle sehen denselben Datenstand.")
-        st.caption("Filter, Suche und persönliche Ansichten bleiben lokal pro Nutzerin bzw. Nutzer.")
+        st.text_input(
+            "Teilbarer Link",
+            value=share_url,
+            help="Diesen Link an Mitbeobachter senden. Alle sehen denselben Datenstand; Filter bleiben persönlich.",
+        )
+        if board_id:
+            st.success(f"Aktiver Analyse-Raum: {board_id}")
+        else:
+            st.info("Starte mit einem neuen Analyse-Raum. Danach kannst du den TikTok-Livechat verbinden.")
 
         st.divider()
-        st.header("Live starten")
-        username_input = st.text_input("TikTok Username", placeholder="@username")
-        if st.button("▶ Mitschnitt für dieses Dashboard starten", use_container_width=True, disabled=not board_id):
+        st.header("2. TikTok-Live verbinden")
+        st.caption("Gib den TikTok-Namen des laufenden Lives ein. Die App liest Kommentare ab diesem Zeitpunkt mit und schreibt sie in den aktiven Analyse-Raum.")
+        username_input = st.text_input(
+            "TikTok-Account des Lives",
+            placeholder="@username",
+            help="Der Account muss gerade live sein. Der @-Name reicht aus.",
+        )
+        listener_running = bool(
+            st.session_state.get("listener_thread")
+            and st.session_state.listener_thread.is_alive()
+        )
+        start_disabled = not board_id or not username_input.strip() or listener_running
+        start_help = (
+            "Der Listener läuft bereits in dieser Browser-Session."
+            if listener_running
+            else "Startet den Livechat-Listener für den eingetragenen TikTok-Account."
+        )
+        if st.button("Livechat-Aufzeichnung starten", use_container_width=True, disabled=start_disabled, help=start_help):
             try:
                 if not board_id:
-                    raise ValueError("Bitte zuerst ein Dashboard erstellen oder beitreten.")
+                    raise ValueError("Bitte zuerst einen Analyse-Raum erstellen oder öffnen.")
                 username = normalize_username(username_input)
                 board = get_board(board_id)
                 if not board:
-                    raise ValueError("Board nicht gefunden.")
+                    raise ValueError("Analyse-Raum nicht gefunden.")
                 update_board(
                     board_id,
                     host_username=username,
@@ -1744,24 +1785,28 @@ def main():
                 )
                 thread.start()
                 st.session_state.listener_thread = thread
-                st.success(f"Listener gestartet für {username}")
+                st.success(f"Livechat-Aufzeichnung für {username} gestartet.")
             except Exception as e:
                 st.error(str(e))
+        if listener_running:
+            st.caption("Aufzeichnung läuft in dieser Session. Eingehende Kommentare erscheinen automatisch im Live-Monitor.")
+        elif board_id:
+            st.caption("Bereit zum Starten, sobald ein TikTok-Account eingetragen ist.")
 
         st.divider()
-        st.subheader("KI-Auswertung")
-        st.toggle("KI aktiv", key="ai_enabled", help="Kosteneffiziente Strategie: Heuristik live, KI nur gezielt.")
-        st.selectbox("KI-Modus", ["Manuell", "Nur bei Alarm", "Nur Endreport", "Bei Alarm + Endreport"], key="ai_mode", help="Empfehlung: Nur bei Alarm oder manuell.")
-        st.text_input("KI-Modell", key="ai_model", help="Google AI Studio Modellname, z. B. gemini-2.0-flash.")
-        st.caption("Am sinnvollsten: Snapshot auf Abruf, Endreport am Ende und Auto-KI nur bei Alarm.")
+        st.subheader("3. KI-Unterstützung")
+        st.toggle("KI-Auswertung aktivieren", key="ai_enabled", help="Aktiviert KI-Snapshots und Endberichte. Ohne API-Key bleiben die heuristischen Analysen verfügbar.")
+        st.selectbox("Wann soll KI schreiben?", ["Manuell", "Nur bei Alarm", "Nur Endreport", "Bei Alarm + Endreport"], key="ai_mode", help="Empfehlung: Manuell oder Nur bei Alarm, damit Kosten und Output kontrollierbar bleiben.")
+        st.text_input("KI-Modellname", key="ai_model", help="Google AI Studio Modellname, z. B. gemini-2.0-flash.")
+        st.caption("Die Live-Analyse läuft immer heuristisch. KI ergänzt nur Zusammenfassungen.")
         if st.session_state.get("ai_enabled") and not get_google_api_key():
             st.warning("Kein GOOGLE_API_KEY gefunden. Bitte als Secret oder Umgebungsvariable setzen.")
         if st.session_state.get("ai_error"):
             st.error(st.session_state.get("ai_error"))
 
         st.divider()
-        st.subheader("Persönliche Filter")
-        search_text = st.text_input("Suche", placeholder="z. B. Merz")
+        st.subheader("4. Ansicht filtern")
+        search_text = st.text_input("Suchbegriff im Chat", placeholder="z. B. Merz")
         tone_filter = st.selectbox(
             "Tonlage",
             ["Alle", "neutral", "fragend", "polarisierend", "abwertend"],
@@ -1787,15 +1832,20 @@ def main():
 
     all_users = ["Alle"] + sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else ["Alle"]
     with st.sidebar:
-        user_filter = st.selectbox("User", all_users)
-        if st.button("📝 Gemeinsamen Report erstellen", use_container_width=True, disabled=not board_id):
+        user_filter = st.selectbox("Nur Nachrichten von", all_users, help="Filtert nur deine Ansicht. Der gemeinsame Datenstand bleibt unverändert.")
+        if st.button(
+            "Gemeinsamen Analysebericht erzeugen",
+            use_container_width=True,
+            disabled=not board_id,
+            help="Erstellt aus den bisherigen Chatdaten einen regelbasierten Bericht und speichert ihn im Analyse-Raum.",
+        ):
             tmp_comment_df = build_dataframe(get_comment_messages(load_messages(board_id) if board_id else []))
             tmp_scores_df = user_scores(tmp_comment_df)
             tmp_clusters_df = build_clusters(tmp_comment_df, max_clusters=8)
             tmp_impact = impact_scores(tmp_comment_df, tmp_scores_df, tmp_clusters_df)
             report = generate_rule_based_report(tmp_comment_df, tmp_scores_df, tmp_clusters_df, tmp_impact)
             update_board(board_id, report_text=report)
-            st.success("Report im Dashboard gespeichert.")
+            st.success("Analysebericht im Raum gespeichert.")
 
     filters = {
         "search": search_text,
@@ -1829,7 +1879,7 @@ def main():
     report_text = board.get("report_text", "") if board else ""
 
     if not board_id:
-        st.info("Erstelle links ein neues Dashboard oder tritt einem bestehenden Board bei.")
+        st.info("Erstelle links einen neuen Analyse-Raum oder öffne eine vorhandene Board-ID.")
         st.stop()
 
     maybe_run_auto_ai(comment_df, scores_df, clusters_df, impact, report_text)
@@ -1897,6 +1947,8 @@ def main():
 
                     badge_html = "".join(badges)
                     username_col = user_color(row["username"])
+                    safe_username = html.escape(str(row["username"]))
+                    safe_text = html.escape(str(row["text"]))
                     ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
 
                     avatar_col, content_col = st.columns([0.09, 0.91], gap="small")
@@ -1913,7 +1965,7 @@ def main():
                             f"""
                             <div class="chat-item {heat_class}">
                                 <div class="chat-main">
-                                    <span style="color:{username_col}; font-weight:700;">{row['username']}</span>: {row['text']}
+                                    <span style="color:{username_col}; font-weight:700;">{safe_username}</span>: {safe_text}
                                 </div>
                                 <div style="margin-top:.25rem;">{badge_html}</div>
                                 <div class="chat-meta">{ts}</div>
@@ -1928,7 +1980,7 @@ def main():
             if system_rows:
                 with st.expander("Systemmeldungen", expanded=False):
                     for row in system_rows[-50:]:
-                        st.markdown(f"**{row['username']}**: {row['text']}\n`{row['timestamp'][11:19]}`")
+                        st.write(f"{row['username']}: {row['text']} [{row['timestamp'][11:19]}]")
 
         with right:
             st.markdown('<div class="sticky-panel">', unsafe_allow_html=True)
@@ -2187,9 +2239,9 @@ def main():
     with tab_export:
         st.subheader("Gemeinsamer Report")
         if report_text:
-            st.markdown(f'<div class="report-box">{report_text}</div>', unsafe_allow_html=True)
+            render_text_box(report_text)
         else:
-            st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
+            st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Analysebericht erzeugen'.")
 
         export1, export2, export3 = st.columns(3)
         export1.download_button("TXT exportieren", data=messages_to_txt(all_messages), file_name=f"tiktok-live-{board_id}.txt", use_container_width=True)
@@ -2230,10 +2282,10 @@ def main():
             st.caption(f"Letzte KI-Auswertung: {st.session_state['ai_last_run_label']}")
         if st.session_state.get("ai_snapshot_text"):
             st.subheader("KI-Snapshot")
-            st.markdown(f'<div class="report-box">{st.session_state["ai_snapshot_text"]}</div>', unsafe_allow_html=True)
+            render_text_box(st.session_state["ai_snapshot_text"])
         if st.session_state.get("ai_endreport_text"):
             st.subheader("KI-Endreport")
-            st.markdown(f'<div class="report-box">{st.session_state["ai_endreport_text"]}</div>', unsafe_allow_html=True)
+            render_text_box(st.session_state["ai_endreport_text"])
 
     st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
 
