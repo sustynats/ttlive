@@ -1805,12 +1805,18 @@ def ai_enabled() -> bool:
 
 
 def get_google_api_key() -> str | None:
+    secret_names = ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_AI_API_KEY", "google_api_key", "gemini_api_key"]
     try:
-        if "GOOGLE_API_KEY" in st.secrets:
-            return st.secrets["GOOGLE_API_KEY"]
+        for name in secret_names:
+            if name in st.secrets and str(st.secrets[name]).strip():
+                return str(st.secrets[name]).strip()
     except Exception:
         pass
-    return os.getenv("GOOGLE_API_KEY")
+    for name in secret_names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
 
 
 def df_records(df: pd.DataFrame, limit: int = 20) -> list[dict]:
@@ -1932,8 +1938,14 @@ def call_google_ai(prompt: str, model: str | None = None) -> str:
         }
     }
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-    resp = requests.post(url, headers=headers, json=body, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=60)
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        detail = resp.text[:1200] if "resp" in locals() and resp is not None else str(e)
+        raise RuntimeError(f"Google API Fehler {resp.status_code if 'resp' in locals() else ''} für Modell '{model_name}': {detail}") from e
+    except requests.RequestException as e:
+        raise RuntimeError(f"Google API nicht erreichbar: {e}") from e
     data = resp.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -1945,6 +1957,12 @@ def run_ai_analysis(mode: str, comment_df: pd.DataFrame, scores_df: pd.DataFrame
     payload = build_ai_payload(comment_df, scores_df, clusters_df, impact, report_text, mode=mode)
     prompt = build_ai_prompt(payload, mode=mode)
     return call_google_ai(prompt, st.session_state.get("ai_model", AI_DEFAULT_MODEL))
+
+
+def test_google_ai_connection() -> str:
+    model_name = st.session_state.get("ai_model", AI_DEFAULT_MODEL) or AI_DEFAULT_MODEL
+    text = call_google_ai("Antworte exakt mit: OK", model_name)
+    return f"Verbindung erfolgreich. Modell: {model_name}. Antwort: {text[:120]}"
 
 
 def maybe_run_auto_ai(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict, report_text: str):
@@ -2062,6 +2080,7 @@ def init_state():
         "ai_last_run_label": "",
         "ai_last_output_key": "",
         "ai_pending": None,
+        "ai_connection_status": "",
         "ai_error": "",
     }
     for key, value in defaults.items():
@@ -2823,6 +2842,22 @@ def main():
             st.info("Noch keine Chatdaten vorhanden. Starte einen Livechat oder importiere eine Datei.")
         else:
             st.success("KI ist bereit.")
+
+        test_col1, test_col2 = st.columns([1, 2])
+        with test_col1:
+            if st.button("API-Verbindung testen", use_container_width=True, disabled=(not ai_enabled() or not bool(get_google_api_key()))):
+                try:
+                    st.session_state["ai_error"] = ""
+                    with st.spinner("Google API wird getestet ..."):
+                        st.session_state["ai_connection_status"] = test_google_ai_connection()
+                    st.success(st.session_state["ai_connection_status"])
+                except Exception as e:
+                    st.session_state["ai_connection_status"] = ""
+                    st.session_state["ai_error"] = str(e)
+                    st.error(str(e))
+        with test_col2:
+            if st.session_state.get("ai_connection_status"):
+                st.caption(st.session_state["ai_connection_status"])
 
         def ai_action(label: str, mode: str, state_key: str):
             disabled = not ai_enabled() or not bool(all_messages) or not bool(get_google_api_key()) or bool(st.session_state.get("ai_pending"))
