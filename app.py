@@ -947,6 +947,7 @@ st.markdown("""
     .score-arrow { font-size: 1.05rem; font-weight: 700; margin-left: .2rem; }
     .avatar-fallback { width: 44px; height: 44px; border-radius: 999px; display:flex; align-items:center; justify-content:center; font-size:.82rem; font-weight:700; color:white; }
     .report-box { white-space: pre-wrap; line-height: 1.55; }
+    .sticky-panel { position: sticky; top: 0.75rem; max-height: calc(100vh - 1.5rem); overflow-y: auto; padding-right: 0.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1095,36 +1096,6 @@ explain_mode = st.toggle(
     help="Zeigt unter jedem Wirkungsfeld eine kurze Begründung, warum der aktuelle Wert zustande kommt."
 )
 
-score_cols = st.columns(5)
-for idx, (name, val) in enumerate(impact.items()):
-    with score_cols[idx]:
-        top = st.columns([0.86, 0.14])
-        with top[0]:
-            st.markdown(f"**{name}**")
-        with top[1]:
-            with st.popover("?"):
-                st.write(SCORE_TOOLTIPS.get(name, ""))
-
-        color = score_color(val)
-        arrow = score_arrow(val)
-        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
-        st.markdown(
-            f"""
-            <div class="score-card" style="border-left: 6px solid {color};">
-                <div class="score-num" style="color:{color};">{val}<span class="score-arrow" style="color:{color};">{arrow}</span></div>
-                <div class="score-sub">{score_label(val)}</div>
-                <div class="score-sub" style="margin-top:.35rem;">Ampel: {ampel}</div>
-                <div class="score-sub">Skala -3 bis +3</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        if explain_mode:
-            st.caption(impact_explanations.get(name, ""))
-
-st.caption("Skala: -3 = stark negativ wirkend, 0 = neutral, +3 = stark positiv wirkend. Die Bewertung ist hier bewusst konservativer kalibriert: +3 ist selten. Die Werte basieren auf Chatmustern wie Triggern, Wiederholungen, Tonlage und Verteilung der Aufmerksamkeit.")
-
 left, right = st.columns([1.25, 1.0], gap="large")
 
 with left:
@@ -1181,6 +1152,31 @@ with left:
 
 
 with right:
+    st.markdown('<div class="sticky-panel">', unsafe_allow_html=True)
+
+    st.subheader("Wirkungsfelder")
+    for name, val in impact.items():
+        color = score_color(val)
+        arrow = score_arrow(val)
+        ampel = "grün" if val >= 1 else "gelb" if val == 0 else "rot"
+        st.metric(
+            label=name,
+            value=f"{val} {arrow}",
+            help=SCORE_TOOLTIPS.get(name, "")
+        )
+        st.markdown(
+            f"""
+            <div class="score-card" style="border-left: 6px solid {color}; margin-top: .25rem;">
+                <div class="score-sub">{score_label(val)}</div>
+                <div class="score-sub" style="margin-top:.35rem;">Ampel: {ampel}</div>
+                <div class="score-sub">Skala -3 bis +3</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        if explain_mode:
+            st.caption(impact_explanations.get(name, ""))
+
     st.subheader("Dynamik")
     activity_df = activity_per_minute(comment_df)
     if not activity_df.empty:
@@ -1197,13 +1193,10 @@ with right:
     st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
     st.caption(GLOBAL_TOOLTIPS["salienz"])
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Warum dieser Hinweis?")
     st.write("Salienz beschreibt, worauf Aufmerksamkeit fällt - nicht unbedingt, was objektiv am wichtigsten ist. Wenige sehr aktive Stimmen oder Trigger können den Diskurs überproportional prägen und dadurch Wahrnehmung verzerren.")
     st.write("Der Hinweis oben ändert sich dynamisch mit dem Chat. Er reagiert vor allem auf Triggerquote, Konzentration auf wenige User und die Frage, ob Aufmerksamkeit auf wenige starke Impulse gezogen wird.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Top-Wörter und Emojis")
     st.caption("Wort- und Emoji-Häufigkeiten helfen dabei zu sehen, welche Themen und emotionalen Marker den Chat prägen.")
     c1, c2 = st.columns(2)
@@ -1213,12 +1206,7 @@ with right:
         st.dataframe(words_df if not words_df.empty else pd.DataFrame(columns=["word", "count"]), use_container_width=True, hide_index=True)
     with c2:
         st.dataframe(emojis_df if not emojis_df.empty else pd.DataFrame(columns=["emoji", "count"]), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
-l2, r2 = st.columns(2, gap="large")
-
-with l2:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Aktivste User")
     top_users_df = top_users(comment_df)
     if not top_users_df.empty:
@@ -1227,61 +1215,51 @@ with l2:
                 x=alt.X("messages:Q", title="Nachrichten"),
                 y=alt.Y("username:N", sort="-x", title="User"),
                 tooltip=["username", "messages"]
-            ).properties(height=340),
+            ).properties(height=260),
             use_container_width=True
         )
     else:
         st.info("Noch keine User-Daten.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
-    rep_df = repeated_messages(comment_df, min_count=2)
-    if not rep_df.empty:
-        st.dataframe(rep_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Bisher keine auffälligen Wiederholungen erkannt.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with r2:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Auffällige User / Diskursverschiebung", help=GLOBAL_TOOLTIPS["shift_score"])
     if not scores_df.empty:
-        st.dataframe(scores_df.head(25), use_container_width=True, hide_index=True)
+        st.dataframe(scores_df.head(25), use_container_width=True, hide_index=True, height=280)
     else:
         st.info("Noch keine User-Scores verfügbar.")
     st.caption(GLOBAL_TOOLTIPS["shift_score"])
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Wiederholungen / mögliche Spam-Muster", help=GLOBAL_TOOLTIPS["wiederholungen"])
+    rep_df = repeated_messages(comment_df, min_count=2)
+    if not rep_df.empty:
+        st.dataframe(rep_df, use_container_width=True, hide_index=True, height=240)
+    else:
+        st.info("Bisher keine auffälligen Wiederholungen erkannt.")
+
     st.subheader("Themencluster", help=GLOBAL_TOOLTIPS["cluster"])
     if not clusters_df.empty:
-        st.dataframe(clusters_df, use_container_width=True, hide_index=True)
+        st.dataframe(clusters_df, use_container_width=True, hide_index=True, height=240)
     else:
         st.info("Für Themencluster werden mehr Chatdaten benötigt.")
     st.caption(GLOBAL_TOOLTIPS["cluster"])
-    st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Rollenbild und Narrative")
-st.caption("Rollen: " + GLOBAL_TOOLTIPS["rollen"] + "  |  Narrative: " + GLOBAL_TOOLTIPS["narrative"])
-c1, c2 = st.columns(2)
-with c1:
+    st.subheader("Rollenbild")
     if roles:
         role_df = pd.DataFrame([{"Rolle": k, "Anzahl": v} for k, v in roles.items()])
-        st.dataframe(role_df, use_container_width=True, hide_index=True)
-        st.caption(GLOBAL_TOOLTIPS["rollen"])
+        st.dataframe(role_df, use_container_width=True, hide_index=True, height=190)
     else:
         st.info("Noch keine Rollenverteilung verfügbar.")
-with c2:
+    st.caption(GLOBAL_TOOLTIPS["rollen"])
+
+    st.subheader("Narrative")
     narratives = narrative_candidates(comment_df)
     if narratives:
         for item in narratives:
             st.write(f"- {item}")
-        st.caption(GLOBAL_TOOLTIPS["narrative"])
     else:
         st.info("Noch keine stabilen Narrative erkannt.")
-st.markdown("</div>", unsafe_allow_html=True)
+    st.caption(GLOBAL_TOOLTIPS["narrative"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.subheader("Gemeinsamer Report", help=GLOBAL_TOOLTIPS["report"])
@@ -1292,8 +1270,6 @@ if report_text:
 else:
     st.info("Noch kein gemeinsamer Report erstellt. Nutze links den Button 'Gemeinsamen Report erstellen'.")
 st.markdown("</div>", unsafe_allow_html=True)
-
-report_text = board.get("report_text", "") if board else ""
 
 with st.sidebar:
     st.divider()
