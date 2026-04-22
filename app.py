@@ -10,6 +10,7 @@ import secrets
 import os
 import html
 import requests
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -2322,6 +2323,10 @@ def ai_output_token_limit(mode: str | None = None) -> int:
     return max(1024, min(8192, max(configured, mode_floor)))
 
 
+def approx_character_budget(token_limit: int) -> int:
+    return int(token_limit * 3.6)
+
+
 def build_ai_payload(
     comment_df: pd.DataFrame,
     scores_df: pd.DataFrame,
@@ -2395,7 +2400,7 @@ def build_ai_payload(
     return payload
 
 
-def build_ai_prompt(payload: dict, mode: str = "snapshot") -> str:
+def build_ai_prompt(payload: dict, mode: str = "snapshot", token_limit: int | None = None) -> str:
     goals = {
         "snapshot": (
             "Erstelle einen kompakten KI-Snapshot zum bisherigen TikTok-Live-Chat. "
@@ -2425,8 +2430,13 @@ def build_ai_prompt(payload: dict, mode: str = "snapshot") -> str:
         ),
     }
     goal = goals.get(mode, goals["snapshot"])
+    token_limit = token_limit or AI_DEFAULT_MAX_OUTPUT_TOKENS
+    character_budget = approx_character_budget(token_limit)
 
     rules = (
+        f"Du hast maximal etwa {token_limit} Output-Tokens zur Verfügung, grob ca. {character_budget} Zeichen. "
+        "Plane die Antwort so, dass sie innerhalb dieses Rahmens vollständig endet und nicht mitten im Satz abbricht. "
+        "Wenn der Platz nicht reicht, priorisiere klare Kernaussagen vor Detailtiefe. "
         "Wichtig: Sei vorsichtig mit Zuschreibungen. "
         "Formuliere Hinweise auf mögliche Manipulation oder Koordination nur als Beobachtung oder Hypothese, nicht als Fakt. "
         "Nutze die gelieferten Heuristiken, Warnungen und Rohbeispiele zusammen. "
@@ -2444,8 +2454,10 @@ def call_google_ai(prompt: str, model: str | None = None, max_output_tokens: int
     api_key = get_google_api_key()
     if not api_key:
         raise RuntimeError("Kein GOOGLE_API_KEY gefunden. Bitte als Streamlit Secret oder Umgebungsvariable setzen.")
-    model_name = model or AI_DEFAULT_MODEL
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    primary_model = model or AI_DEFAULT_MODEL
+    fallback_models = []
+    if primary_model != "gemini-2.5-flash-lite":
+        fallback_models.append("gemini-2.5-flash-lite")
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -2455,28 +2467,43 @@ def call_google_ai(prompt: str, model: str | None = None, max_output_tokens: int
         }
     }
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-    try:
-        resp = requests.post(url, headers=headers, json=body, timeout=60)
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        detail = resp.text[:1200] if "resp" in locals() and resp is not None else str(e)
-        raise RuntimeError(f"Google API Fehler {resp.status_code if 'resp' in locals() else ''} für Modell '{model_name}': {detail}") from e
-    except requests.RequestException as e:
-        raise RuntimeError(f"Google API nicht erreichbar: {e}") from e
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception:
-        raise RuntimeError(f"Unerwartete Antwort von Google AI Studio: {data}")
+    errors = []
+    for model_name in [primary_model] + fallback_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        for attempt in range(3):
+            try:
+                resp = requests.post(url, headers=headers, json=body, timeout=60)
+                if resp.status_code in {429, 503} and attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if model_name != primary_model:
+                        return f"Hinweis: Das Hauptmodell war kurzfristig ausgelastet. Diese Antwort wurde mit {model_name} erzeugt.\n\n{text}"
+                    return text
+                except Exception:
+                    raise RuntimeError(f"Unerwartete Antwort von Google AI Studio: {data}")
+            except requests.HTTPError as e:
+                detail = resp.text[:1200] if "resp" in locals() and resp is not None else str(e)
+                errors.append(f"{model_name}: HTTP {resp.status_code if 'resp' in locals() else ''} {detail}")
+                if resp.status_code not in {429, 503}:
+                    break
+            except requests.RequestException as e:
+                errors.append(f"{model_name}: {e}")
+                break
+    raise RuntimeError("Google API momentan nicht verfügbar oder ausgelastet. Versuche es gleich erneut. Details: " + " | ".join(errors[-3:]))
 
 
 def run_ai_analysis(mode: str, comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict, report_text: str, event_df: pd.DataFrame | None = None) -> str:
     payload = build_ai_payload(comment_df, scores_df, clusters_df, impact, report_text, mode=mode, event_df=event_df)
-    prompt = build_ai_prompt(payload, mode=mode)
+    token_limit = ai_output_token_limit(mode)
+    prompt = build_ai_prompt(payload, mode=mode, token_limit=token_limit)
     return call_google_ai(
         prompt,
         st.session_state.get("ai_model", AI_DEFAULT_MODEL),
-        max_output_tokens=ai_output_token_limit(mode),
+        max_output_tokens=token_limit,
     )
 
 
