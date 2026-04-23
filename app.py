@@ -127,6 +127,10 @@ GLOSSARY = {
     "Viewer Drop": "Zeitfenster, in dem die gemeldete Zuschauerzahl deutlich fällt. Das kann viele Ursachen haben und ist kein harter Kausalitätsbeweis.",
     "Zeit-Korrelation": "Näherung, ob Trigger, Gifts oder Chat-Spitzen zeitlich mit Viewer-Veränderungen zusammenfallen. Das zeigt Muster, keine bewiesene Ursache.",
     "Conversion": "Näherung, wie stark Zuschauer in sichtbare Aktionen übergehen: Kommentare, Likes, Shares, Follows oder Gifts.",
+    "Geschätzt sichtbar anwesend": "Heuristische Schätzung, wie viele sichtbar gewordene Accounts aktuell noch im Live sein dürften. Grundlage sind sichtbare Aktivitäten und Session-Fortschreibung mit Leerlauf-Fenster. Das ist keine vollständige Zuschauerliste.",
+    "Sichtbare Accounts im Verlauf": "Anzahl unterschiedlicher Accounts, die irgendwann im bisherigen Mitschnitt sichtbar geworden sind, etwa über Kommentare, Joins, Likes, Shares, Follows oder Gifts.",
+    "Geschätzte Präsenz": "Aufsummierte Dauer aller geschätzten Session-Blöcke eines sichtbaren Accounts im Mitschnitt. Wenn ein User rein, raus und später wieder rein kommt, werden die Blöcke addiert.",
+    "Session-Blöcke": "Anzahl getrennter Anwesenheitsphasen eines sichtbaren Accounts. Eine neue Session beginnt, wenn zwischen zwei sichtbaren Aktivitäten länger keine Aktivität dieses Accounts erkannt wurde.",
 }
 
 COLUMN_MAPPING = {
@@ -225,6 +229,14 @@ COLUMN_MAPPING = {
     "spike_signal": "Spike-Signal",
     "correlation_signal": "Korrelationssignal",
     "risk_score": "Risiko-Score",
+    "estimated_presence": "Geschätzte Präsenz",
+    "estimated_presence_minutes": "Präsenz in Minuten",
+    "session_count": "Session-Blöcke",
+    "currently_present": "Aktuell geschätzt da",
+    "first_seen_presence": "Erste sichtbare Präsenz",
+    "last_seen_presence": "Letzte sichtbare Präsenz",
+    "last_presence_source": "Letzte Präsenzquelle",
+    "last_source": "Letzte sichtbare Quelle",
 }
 
 
@@ -562,6 +574,20 @@ def resolved_viewer_count(viewer_count, total_viewer_count) -> int:
     return current
 
 
+def format_duration_minutes(minutes_value) -> str:
+    try:
+        total_seconds = max(int(round(float(minutes_value) * 60)), 0)
+    except Exception:
+        return "-"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    if minutes > 0:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def live_user_metadata(user_obj) -> dict:
     if user_obj is None:
         return {}
@@ -806,6 +832,116 @@ def render_glossary(keys: list[str] | None = None):
         display_table(pd.DataFrame(rows), height=min(520, 70 + 34 * len(rows)))
 
 
+def render_help_center():
+    st.subheader("Hilfe & Glossar")
+    st.caption("Kurze Orientierung dazu, was die wichtigsten Zahlen bedeuten, wo du sie findest und wie du sie sinnvoll lesen kannst.")
+
+    st.markdown("**1. So liest du das Dashboard**")
+    guide_rows = [
+        {
+            "Bereich": "Lagebild",
+            "Wozu": "Schneller Überblick über Gesamtlage, Dynamik, Wirkungsfelder und Zuschauerentwicklung.",
+            "Wichtige Fragen": "Kippt der Chat? Werden wenige Stimmen dominant? Wie entwickeln sich Zuschauer und sichtbare Accounts?",
+        },
+        {
+            "Bereich": "Live-Monitor",
+            "Wozu": "Operative Live-Sicht mit Feed, Warnungen, aktueller Zuschauerlage und sichtbaren Accounts.",
+            "Wichtige Fragen": "Was passiert gerade? Wer ist gerade sichtbar aktiv oder geschätzt noch da?",
+        },
+        {
+            "Bereich": "Community",
+            "Wozu": "Wer prägt den Chat, wer unterstützt, wer wird adressiert, welche Rollen und Machtstrukturen entstehen?",
+            "Wichtige Fragen": "Welche Accounts treiben Themen, Support oder Dynamik?",
+        },
+        {
+            "Bereich": "User-Insights",
+            "Wozu": "Detailansicht zu einem einzelnen sichtbaren Account.",
+            "Wichtige Fragen": "Was hat diese Person geschrieben, welche Events hatte sie, wie lange war sie da, wie oft kam sie wieder?",
+        },
+        {
+            "Bereich": "Events & Support",
+            "Wozu": "Gifts, Likes, Shares, Joins, Funnel und Monetarisierung.",
+            "Wichtige Fragen": "Wer unterstützt, wann eskaliert Support, wie wird Aufmerksamkeit in Aktionen umgewandelt?",
+        },
+        {
+            "Bereich": "Diskurs-Analyse",
+            "Wozu": "Tiefe Analyse zu kritischen Momenten, Narrativen, Korrelationen und Machtstrukturen.",
+            "Wichtige Fragen": "Welche Muster entstehen und wann verdichten sie sich?",
+        },
+        {
+            "Bereich": "Export & KI",
+            "Wozu": "Exporte, HTML-Report, Import und KI-Berichte.",
+            "Wichtige Fragen": "Wie teile ich Ergebnisse und wie nutze ich KI-Auswertungen sinnvoll?",
+        },
+    ]
+    display_table(pd.DataFrame(guide_rows), height=320)
+
+    st.markdown("**2. Die wichtigsten Zahlen richtig unterscheiden**")
+    metric_rows = [
+        {
+            "Kennzahl": "User",
+            "Aussage": "Geschätzt sichtbar anwesende Accounts im aktuellen Stand.",
+            "So entsteht sie": "Aus sichtbaren Aktivitäten werden Session-Blöcke geschätzt. Accounts gelten noch als anwesend, solange ihre Session nicht ausgelaufen ist.",
+            "Interpretation": "Näherung für sichtbare Anwesenheit. Nicht identisch mit allen stillen Zuschauern.",
+        },
+        {
+            "Kennzahl": "Zuschauer gesamt",
+            "Aussage": "Von TikTok gemeldete Zuschauerzahl.",
+            "So entsteht sie": "Kommt aus RoomUserSeqEvent. Falls TikTok zwei Viewer-Felder liefert, nutzt die App die größere Gesamtzahl.",
+            "Interpretation": "Beste verfügbare Plattformzahl, aber nur wenn TikTokLive sie wirklich liefert.",
+        },
+        {
+            "Kennzahl": "Geschätzt sichtbar anwesend",
+            "Aussage": "Wie viele sichtbar gewordene Accounts wahrscheinlich noch da sind.",
+            "So entsteht sie": "Session-Fortschreibung aus Kommentaren, Joins, Likes, Shares, Follows und Gifts.",
+            "Interpretation": "Gut für sichtbare Community-Dynamik, nicht für stille Zuschauer.",
+        },
+        {
+            "Kennzahl": "Sichtbare Accounts im Verlauf",
+            "Aussage": "Wie viele unterschiedliche Accounts im gesamten Mitschnitt irgendwann sichtbar waren.",
+            "So entsteht sie": "Einmalige Accounts aus Kommentaren und Live-Events werden dedupliziert gezählt.",
+            "Interpretation": "Kumulierte Reichweite sichtbarer Accounts, deshalb oft höher als die grüne Kurve.",
+        },
+        {
+            "Kennzahl": "Geschätzte Präsenz",
+            "Aussage": "Wie lange ein sichtbarer Account über alle Session-Blöcke hinweg im Mitschnitt präsent war.",
+            "So entsteht sie": "Alle geschätzten Session-Dauern eines Accounts werden addiert.",
+            "Interpretation": "Hilfreich für Stammgäste, Supporter und wiederkehrende Accounts.",
+        },
+        {
+            "Kennzahl": "Session-Blöcke",
+            "Aussage": "Wie oft ein sichtbarer Account getrennte Anwesenheitsphasen hatte.",
+            "So entsteht sie": "Wenn längere Inaktivität zwischen zwei sichtbaren Aktivitäten liegt, beginnt ein neuer Block.",
+            "Interpretation": "Praktische Näherung für rein/raus/rein-Muster.",
+        },
+    ]
+    display_table(pd.DataFrame(metric_rows), height=360)
+
+    st.markdown("**3. Interpretation mit Augenmaß**")
+    st.markdown(
+        """
+        - Heuristiken wie `Shift-Score`, `Influence-Score`, `Kritische Momente` oder `Geschätzt sichtbar anwesend` sind **Orientierungswerte**, keine harten Wahrheiten.
+        - `Zeit-Korrelation` zeigt **zeitliche Nähe**, nicht bewiesene Ursache.
+        - `Toxisch`, `Trigger` und `Archetypen` helfen beim Einordnen von Mustern, können aber im Einzelfall falsch liegen.
+        - Bei Zuschauer- und Anwesenheitszahlen gilt: **TikTokLive zeigt nur, was im Eventstrom sichtbar wird**. Eine vollständige stille Zuschauerliste gibt es nicht verlässlich.
+        """
+    )
+
+    st.markdown("**4. Wo sehe ich was konkret?**")
+    where_rows = [
+        {"Frage": "Wer ist gerade vermutlich noch da?", "Ort": "Live-Monitor -> Joins & Zuschauer"},
+        {"Frage": "Wie viele sichtbare Accounts waren insgesamt da?", "Ort": "Lagebild unter der Zuschauerkurve / Live-Monitor Text darunter"},
+        {"Frage": "Wie lange war ein Account da?", "Ort": "User-Insights -> Kennzahlen + Profilwerte"},
+        {"Frage": "Wie oft war ein Account raus und wieder drin?", "Ort": "User-Insights -> Präsenz- und Session-Werte"},
+        {"Frage": "Welche Nachrichten gehören zu einem kritischen Peak?", "Ort": "Lagebild / Diskurs-Analyse -> Kritische Momente"},
+        {"Frage": "Welche Accounts haben unterstützt oder geschenkt?", "Ort": "Events & Support / Community"},
+    ]
+    display_table(pd.DataFrame(where_rows), height=260)
+
+    with st.expander("Glossar komplett", expanded=False):
+        render_glossary()
+
+
 def messages_to_txt(messages) -> str:
     messages = clean_message_store(messages)
     return "\n".join(render_message_text(m) for m in messages)
@@ -856,6 +992,8 @@ def build_report_html(
     clusters_df: pd.DataFrame,
     critical_df: pd.DataFrame,
     viewer_df: pd.DataFrame,
+    presence_df: pd.DataFrame,
+    presence_summary_df: pd.DataFrame,
     risk_radar_df: pd.DataFrame,
     correlation_df: pd.DataFrame,
     correlation_engine_df: pd.DataFrame,
@@ -878,11 +1016,11 @@ def build_report_html(
             .rename(columns={"viewer_count": "count"})
             .assign(series="Zuschauer gesamt")
         )
-    if not viewer_df.empty and viewer_df["active_users"].max() > 0:
+    if not presence_df.empty and presence_df["present_users"].max() > 0:
         audience_series.append(
-            viewer_df[["bucket", "active_users"]]
-            .rename(columns={"active_users": "count"})
-            .assign(series="Sichtbar aktive User")
+            presence_df[["bucket", "present_users"]]
+            .rename(columns={"present_users": "count"})
+            .assign(series="Geschätzt sichtbar anwesend")
         )
     if audience_series:
         audience_df = pd.concat(audience_series, ignore_index=True)
@@ -894,7 +1032,7 @@ def build_report_html(
                 color=alt.Color(
                     "series:N",
                     title="Reihe",
-                    scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbar aktive User"], range=["#2563eb", "#16a34a"]),
+                    scale=alt.Scale(domain=["Zuschauer gesamt", "Geschätzt sichtbar anwesend"], range=["#2563eb", "#16a34a"]),
                 ),
                 tooltip=["bucket:T", "series:N", alt.Tooltip("count:Q", title="Anzahl", format=".0f")],
             ).properties(height=280),
@@ -1089,6 +1227,10 @@ def build_report_html(
         <section class="report-section">
           <h2>Influence Scores</h2>
           {html_table(influence_df, 25)}
+        </section>
+        <section class="report-section">
+          <h2>Sichtbare Anwesenheit</h2>
+          {html_table(presence_summary_df, 30)}
         </section>
       </main>
     </body>
@@ -3199,22 +3341,22 @@ def render_viewer_dynamics(viewer_df: pd.DataFrame, height: int = 310):
     st.altair_chart((line + points).properties(height=height), use_container_width=True)
 
 
-def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
-    if viewer_df is None or viewer_df.empty:
+def render_audience_timeline(viewer_df: pd.DataFrame, presence_df: pd.DataFrame | None = None, height: int = 320):
+    if (viewer_df is None or viewer_df.empty) and (presence_df is None or presence_df.empty):
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
         return
     series_frames = []
-    if "viewer_count" in viewer_df.columns and float(viewer_df["viewer_count"].max()) > 0:
+    if viewer_df is not None and not viewer_df.empty and "viewer_count" in viewer_df.columns and float(viewer_df["viewer_count"].max()) > 0:
         series_frames.append(
             viewer_df[["bucket", "viewer_count"]]
             .rename(columns={"viewer_count": "count"})
             .assign(series="Zuschauer gesamt")
         )
-    if "active_users" in viewer_df.columns and float(viewer_df["active_users"].max()) > 0:
+    if presence_df is not None and not presence_df.empty and float(presence_df["present_users"].max()) > 0:
         series_frames.append(
-            viewer_df[["bucket", "active_users"]]
-            .rename(columns={"active_users": "count"})
-            .assign(series="Aktiv im Zeitfenster")
+            presence_df[["bucket", "present_users"]]
+            .rename(columns={"present_users": "count"})
+            .assign(series="Geschätzt sichtbar anwesend")
         )
     if not series_frames:
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
@@ -3226,7 +3368,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
         color=alt.Color(
             "series:N",
             title="Reihe",
-            scale=alt.Scale(domain=["Zuschauer gesamt", "Aktiv im Zeitfenster"], range=["#2563eb", "#16a34a"]),
+            scale=alt.Scale(domain=["Zuschauer gesamt", "Geschätzt sichtbar anwesend"], range=["#2563eb", "#16a34a"]),
         ),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
@@ -3706,6 +3848,170 @@ def recent_joiners(event_df: pd.DataFrame, limit: int = 8) -> pd.DataFrame:
     return joins.sort_values("dt", ascending=False).head(limit)[["timestamp", "username", "avatar_url"]]
 
 
+@st.cache_data(ttl=8, show_spinner=False)
+def visible_activity_frame(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if comment_df is not None and not comment_df.empty:
+        for _, row in comment_df.dropna(subset=["dt"]).iterrows():
+            username = str(row.get("username", "")).strip()
+            if username in {"", "SYSTEM", "FEHLER"}:
+                continue
+            rows.append({
+                "username": username,
+                "dt": row.get("dt"),
+                "timestamp": row.get("timestamp"),
+                "source": "Kommentar",
+                "avatar_url": row.get("avatar_url"),
+            })
+    if event_df is not None and not event_df.empty:
+        event_rows = event_df[
+            event_df["event_type"].isin({"join", "like", "share", "gift", "follow"})
+        ].dropna(subset=["dt"])
+        for _, row in event_rows.iterrows():
+            username = str(row.get("username", "")).strip()
+            if username in {"", "SYSTEM", "FEHLER"}:
+                continue
+            rows.append({
+                "username": username,
+                "dt": row.get("dt"),
+                "timestamp": row.get("timestamp"),
+                "source": row.get("event_label") or row.get("event_type") or "Event",
+                "avatar_url": row.get("avatar_url"),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["username", "dt", "timestamp", "source", "avatar_url"])
+    return pd.DataFrame(rows).sort_values("dt").reset_index(drop=True)
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def visible_presence_sessions(
+    comment_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    idle_minutes: int = 5,
+    tail_seconds: int = 120,
+) -> pd.DataFrame:
+    activity_df = visible_activity_frame(comment_df, event_df)
+    columns = ["username", "session_start", "session_end", "duration_minutes"]
+    if activity_df.empty:
+        return pd.DataFrame(columns=columns)
+    idle_gap = pd.Timedelta(minutes=idle_minutes)
+    tail_delta = pd.Timedelta(seconds=tail_seconds)
+    rows = []
+    for username, group in activity_df.groupby("username"):
+        points = group.sort_values("dt")["dt"].dropna().tolist()
+        if not points:
+            continue
+        session_start = points[0]
+        last_seen = points[0]
+        for point in points[1:]:
+            if point - last_seen <= idle_gap:
+                last_seen = point
+                continue
+            session_end = last_seen + tail_delta
+            rows.append({
+                "username": username,
+                "session_start": session_start,
+                "session_end": session_end,
+                "duration_minutes": max((session_end - session_start).total_seconds() / 60.0, 0.0),
+            })
+            session_start = point
+            last_seen = point
+        session_end = last_seen + tail_delta
+        rows.append({
+            "username": username,
+            "session_start": session_start,
+            "session_end": session_end,
+            "duration_minutes": max((session_end - session_start).total_seconds() / 60.0, 0.0),
+        })
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(["session_end", "session_start"], ascending=[False, False]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def visible_presence_summary(
+    comment_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    idle_minutes: int = 5,
+    tail_seconds: int = 120,
+) -> pd.DataFrame:
+    sessions_df = visible_presence_sessions(comment_df, event_df, idle_minutes=idle_minutes, tail_seconds=tail_seconds)
+    activity_df = visible_activity_frame(comment_df, event_df)
+    columns = [
+        "username", "first_seen", "last_seen", "estimated_presence_minutes", "session_count",
+        "currently_present", "last_source", "avatar_url",
+    ]
+    if sessions_df.empty or activity_df.empty:
+        return pd.DataFrame(columns=columns)
+    latest_dt = activity_df["dt"].max()
+    base = (
+        sessions_df.groupby("username")
+        .agg(
+            first_seen=("session_start", "min"),
+            last_seen=("session_end", "max"),
+            estimated_presence_minutes=("duration_minutes", "sum"),
+            session_count=("username", "size"),
+        )
+        .reset_index()
+    )
+    present_users = set(
+        sessions_df[
+            (sessions_df["session_start"] <= latest_dt) & (sessions_df["session_end"] >= latest_dt)
+        ]["username"].tolist()
+    )
+    latest_activity = (
+        activity_df.sort_values("dt", ascending=False)
+        .drop_duplicates(subset=["username"], keep="first")
+        [["username", "source", "avatar_url"]]
+        .rename(columns={"source": "last_source"})
+    )
+    out = base.merge(latest_activity, on="username", how="left")
+    out["currently_present"] = out["username"].isin(present_users)
+    out["first_seen"] = pd.to_datetime(out["first_seen"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    out["last_seen"] = pd.to_datetime(out["last_seen"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    out["estimated_presence_minutes"] = out["estimated_presence_minutes"].round(1)
+    return out.sort_values(
+        ["currently_present", "estimated_presence_minutes", "username"],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def visible_presence_timeline(
+    comment_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    bucket: str = "1min",
+    idle_minutes: int = 5,
+    tail_seconds: int = 120,
+) -> pd.DataFrame:
+    sessions_df = visible_presence_sessions(comment_df, event_df, idle_minutes=idle_minutes, tail_seconds=tail_seconds)
+    if sessions_df.empty:
+        return pd.DataFrame(columns=["bucket", "present_users"])
+    start = pd.to_datetime(sessions_df["session_start"].min()).floor(bucket)
+    end = pd.to_datetime(sessions_df["session_end"].max()).ceil(bucket)
+    buckets = pd.date_range(start=start, end=end, freq=bucket)
+    rows = []
+    for bucket_dt in buckets:
+        active = sessions_df[
+            (sessions_df["session_start"] <= bucket_dt) & (sessions_df["session_end"] >= bucket_dt)
+        ]["username"].nunique()
+        rows.append({"bucket": bucket_dt, "present_users": int(active)})
+    return pd.DataFrame(rows)
+
+
+def user_presence_sessions(username: str, presence_sessions_df: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["session_start", "session_end", "duration_minutes", "duration_label"]
+    if not username or presence_sessions_df is None or presence_sessions_df.empty:
+        return pd.DataFrame(columns=columns)
+    out = presence_sessions_df[presence_sessions_df["username"] == username].copy()
+    if out.empty:
+        return pd.DataFrame(columns=columns)
+    out["duration_label"] = out["duration_minutes"].apply(format_duration_minutes)
+    out["session_start"] = pd.to_datetime(out["session_start"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+    out["session_end"] = pd.to_datetime(out["session_end"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+    return out[columns].sort_values("session_start", ascending=False).reset_index(drop=True)
+
+
 def user_interaction_edges(username: str, comment_df: pd.DataFrame) -> pd.DataFrame:
     if not username or comment_df is None or comment_df.empty:
         return pd.DataFrame(columns=["source", "target", "count", "interaction"])
@@ -3758,7 +4064,7 @@ def user_activity_timeline(username: str, comment_df: pd.DataFrame, event_df: pd
     return pd.DataFrame(rows).sort_values("dt", ascending=False)
 
 
-def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame, scores_df: pd.DataFrame, support_df: pd.DataFrame, influencer_df: pd.DataFrame, influence_df: pd.DataFrame | None = None, compact: bool = False):
+def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame, scores_df: pd.DataFrame, support_df: pd.DataFrame, influencer_df: pd.DataFrame, influence_df: pd.DataFrame | None = None, presence_summary_df: pd.DataFrame | None = None, compact: bool = False):
     if not username:
         st.info("Wähle einen User aus.")
         return
@@ -3771,6 +4077,8 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
     score_row = scores_df[scores_df["username"] == username].head(1) if scores_df is not None and not scores_df.empty else pd.DataFrame()
     support_row = support_df[support_df["username"] == username].head(1) if support_df is not None and not support_df.empty else pd.DataFrame()
     influence_row = influence_df[influence_df["username"] == username].head(1) if influence_df is not None and not influence_df.empty else pd.DataFrame()
+    presence_row = presence_summary_df[presence_summary_df["username"] == username].head(1) if presence_summary_df is not None and not presence_summary_df.empty else pd.DataFrame()
+    presence_sessions = user_presence_sessions(username, visible_presence_sessions(comment_df, event_df))
     interaction_df = user_interaction_edges(username, comment_df)
 
     header_cols = st.columns([0.13, 0.87])
@@ -3809,6 +4117,11 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
     p2.metric("Following", profile_meta.get("following_count", "-"))
     p3.metric("Moderator", "ja" if profile_meta.get("is_moderator") else "nein")
     p4.metric("Subscriber", "ja" if profile_meta.get("is_subscriber") else "nein")
+    if not presence_row.empty:
+        pr1, pr2, pr3 = st.columns(3)
+        pr1.metric("Geschätzte Präsenz", format_duration_minutes(presence_row.iloc[0].get("estimated_presence_minutes", 0)))
+        pr2.metric("Session-Blöcke", int(presence_row.iloc[0].get("session_count", 0)))
+        pr3.metric("Aktuell geschätzt da", "ja" if presence_row.iloc[0].get("currently_present") else "nein")
     if profile_meta.get("profile_url"):
         st.link_button("TikTok-Profil öffnen", profile_meta["profile_url"], use_container_width=True)
     if not profile_meta.get("follower_count"):
@@ -3841,7 +4154,7 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
             else:
                 st.info("Keine @-Interaktionen mit diesem User erkannt.")
 
-        detail_tabs = st.tabs(["Nachrichten", "Events", "Profilwerte", "Öffentliches Profil"])
+        detail_tabs = st.tabs(["Nachrichten", "Events", "Anwesenheit", "Profilwerte", "Öffentliches Profil"])
         with detail_tabs[0]:
             if not user_comments.empty:
                 msg_show = user_comments.sort_values("dt", ascending=False)[["timestamp", "username", "tone", "is_question", "has_trigger", "has_toxic_marker", "text"]].head(100)
@@ -3855,6 +4168,23 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
             else:
                 st.info("Keine Events dieses Users.")
         with detail_tabs[2]:
+            if not presence_row.empty:
+                stay_cols = st.columns(4)
+                stay_cols[0].metric("Geschätzte Präsenz", format_duration_minutes(presence_row.iloc[0].get("estimated_presence_minutes", 0)))
+                stay_cols[1].metric("Session-Blöcke", int(presence_row.iloc[0].get("session_count", 0)))
+                stay_cols[2].metric("Raus/Rein", max(int(presence_row.iloc[0].get("session_count", 0)) - 1, 0))
+                stay_cols[3].metric("Aktuell geschätzt da", "ja" if presence_row.iloc[0].get("currently_present") else "nein")
+                st.caption(
+                    f"Erste sichtbare Präsenz: {presence_row.iloc[0].get('first_seen', '-')} | "
+                    f"Letzte sichtbare Präsenz: {presence_row.iloc[0].get('last_seen', '-')}"
+                )
+                if not presence_sessions.empty:
+                    display_table(presence_sessions, height=280)
+                else:
+                    st.info("Noch keine Session-Blöcke für diesen Account.")
+            else:
+                st.info("Noch keine Präsenzschätzung für diesen Account.")
+        with detail_tabs[3]:
             rows = []
             if not score_row.empty:
                 rows.extend(score_row.to_dict("records"))
@@ -3862,11 +4192,22 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
                 rows.extend(support_row.to_dict("records"))
             if not influence_row.empty:
                 rows.extend(influence_row.to_dict("records"))
+            if not presence_row.empty:
+                rows.append({
+                    "username": username,
+                    "estimated_presence": format_duration_minutes(presence_row.iloc[0].get("estimated_presence_minutes", 0)),
+                    "estimated_presence_minutes": presence_row.iloc[0].get("estimated_presence_minutes", 0),
+                    "session_count": int(presence_row.iloc[0].get("session_count", 0)),
+                    "currently_present": bool(presence_row.iloc[0].get("currently_present")),
+                    "first_seen_presence": presence_row.iloc[0].get("first_seen", "-"),
+                    "last_seen_presence": presence_row.iloc[0].get("last_seen", "-"),
+                    "last_presence_source": presence_row.iloc[0].get("last_source", "-"),
+                })
             if rows:
                 display_table(pd.DataFrame(rows), height=220)
             else:
                 st.info("Noch keine Profilwerte verfügbar.")
-        with detail_tabs[3]:
+        with detail_tabs[4]:
             if profile_meta:
                 profile_rows = [{"Feld": key, "Wert": value} for key, value in profile_meta.items()]
                 display_table(pd.DataFrame(profile_rows), height=280)
@@ -4672,6 +5013,7 @@ def main():
         "🎁 Events & Support",
         "Diskurs-Analyse",
         "Export & KI",
+        "Hilfe & Glossar",
     ]
     if query_tab and str(query_tab) in valid_main_tabs and str(query_tab) != st.session_state.get("last_query_tab"):
         st.session_state["main_tab"] = str(query_tab)
@@ -4910,6 +5252,9 @@ def main():
     event_metrics = live_event_metrics(event_detail_df)
     event_timeline_df = event_timeline(event_detail_df)
     viewer_df = viewer_dynamics(comment_df, event_detail_df)
+    presence_df = visible_presence_timeline(comment_df, event_detail_df)
+    presence_summary_df = visible_presence_summary(comment_df, event_detail_df)
+    current_visible_accounts_df = presence_summary_df[presence_summary_df["currently_present"]].copy() if not presence_summary_df.empty else pd.DataFrame()
     correlation_df = temporal_correlation_signals(viewer_df)
     correlation_engine_df = event_correlation_engine(comment_df, event_detail_df)
     gift_users_df = gift_leaderboard(event_detail_df)
@@ -4960,7 +5305,8 @@ def main():
     with k1:
         render_kpi_card("Nachrichten", summary["messages"], "Chatvolumen", "#2563eb")
     with k2:
-        render_kpi_card("User", summary["users"], "sichtbar aktiv", "#16a34a")
+        visible_now = len(current_visible_accounts_df) if not current_visible_accounts_df.empty else summary["users"]
+        render_kpi_card("User", visible_now, "geschätzt sichtbar anwesend", "#16a34a")
     with k3:
         render_kpi_card("Fragen", summary["questions"], "Frage-Druck", "#0ea5e9", GLOSSARY["Fragequote"])
     with k4:
@@ -5052,8 +5398,11 @@ def main():
                 st.info("Noch keine Alert-Signale.")
 
         st.subheader("Zuschauer- und User-Verlauf")
-        render_audience_timeline(viewer_df, height=290)
-        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt, wie viele Accounts im jeweiligen Zeitfenster sichtbar aktiv waren, nicht die kumulierte Zahl aller bisher sichtbaren Accounts.")
+        render_audience_timeline(viewer_df, presence_df, height=290)
+        kpi_a, kpi_b = st.columns(2)
+        kpi_a.metric("Geschätzt sichtbar anwesend", len(current_visible_accounts_df))
+        kpi_b.metric("Sichtbare Accounts im Verlauf", len(presence_summary_df))
+        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie schätzt, wie viele sichtbar gewordene Accounts zu diesem Zeitpunkt noch anwesend sind. Grundlage sind sichtbare Aktivitäten mit Session-Fortschreibung.")
 
         st.subheader("Viewer Dynamics & Risk Radar")
         vd1, vd2 = st.columns([1.2, 1])
@@ -5113,7 +5462,7 @@ def main():
                     if st.button("Schließen", key="close_live_user_detail", use_container_width=True):
                         st.session_state["show_live_user_detail"] = False
                         st.rerun()
-                render_user_profile_detail(detail_user, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=False)
+                render_user_profile_detail(detail_user, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, presence_summary_df, compact=False)
                 st.divider()
             f1, f2, f3 = st.columns([1.2, 0.9, 0.9])
             with f1:
@@ -5263,8 +5612,9 @@ def main():
                 )
 
             st.subheader("Joins & Zuschauer", help=GLOSSARY["Viewer Count"])
-            total_visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=None)
-            visible_accounts_df = total_visible_accounts_df.head(40).reset_index(drop=True)
+            total_visible_accounts_df = presence_summary_df.copy()
+            visible_accounts_df = total_visible_accounts_df[total_visible_accounts_df["currently_present"]].copy()
+            visible_accounts_df = visible_accounts_df.head(40).reset_index(drop=True)
             if viewer_state["viewer_count"] is not None:
                 st.metric("Aktuelle Zuschauerzahl", viewer_state["viewer_count"])
                 raw_viewer = viewer_state.get("raw_viewer_count")
@@ -5275,19 +5625,19 @@ def main():
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
             if not total_visible_accounts_df.empty:
                 st.caption(
-                    f"Bisher sichtbar im Verlauf: {len(total_visible_accounts_df)} eindeutige Accounts. "
-                    "Das ist eine kumulierte Verlaufsliste und daher höher als die grüne Kurve mit aktiven Accounts pro Zeitfenster."
+                    f"Geschätzt aktuell sichtbar anwesend: {len(current_visible_accounts_df)} Accounts. "
+                    f"Insgesamt sichtbar im bisherigen Verlauf: {len(total_visible_accounts_df)} Accounts."
                 )
             if not visible_accounts_df.empty:
-                expander_label = f"Zuletzt sichtbare Accounts im Live ({len(total_visible_accounts_df)})"
+                expander_label = f"Geschätzt aktuell anwesende sichtbare Accounts ({len(current_visible_accounts_df)})"
                 with st.expander(expander_label, expanded=False):
-                    if len(total_visible_accounts_df) > 40:
+                    if len(current_visible_accounts_df) > 40:
                         st.caption(
                             f"TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. "
-                            f"Hier siehst du die 40 zuletzt sichtbaren Accounts von insgesamt {len(total_visible_accounts_df)} sichtbaren Accounts aus Kommentaren und Live-Events."
+                            f"Hier siehst du die 40 zuletzt geschätzt anwesenden sichtbaren Accounts von insgesamt {len(current_visible_accounts_df)} aktuell geschätzten sichtbaren Accounts."
                         )
                     else:
-                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
+                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die aktuell geschätzt anwesenden sichtbaren Accounts aus Kommentaren und Live-Events.")
                     for _, user_row in visible_accounts_df.iterrows():
                         u_cols = st.columns([0.2, 0.8])
                         with u_cols[0]:
@@ -5296,14 +5646,17 @@ def main():
                             if st.button(
                                 str(user_row["username"]),
                                 key=f"viewer_visible_user_{user_row.name}",
-                                help=f"Zuletzt sichtbar über: {user_row.get('source', '-')}",
+                                help=f"Zuletzt sichtbar über: {user_row.get('last_source', '-')}",
                             ):
                                 open_user_insights_view(board_id, str(user_row["username"]))
-                            st.caption(f"{user_row.get('source', '-')} · {user_row.get('last_seen', '-')}")
+                            st.caption(
+                                f"{user_row.get('last_source', '-')} · zuletzt bis {user_row.get('last_seen', '-')} · "
+                                f"geschätzte Dauer {format_duration_minutes(user_row.get('estimated_presence_minutes', 0))}"
+                            )
             else:
                 st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
-            render_audience_timeline(viewer_df, height=220)
-            st.caption("Die grüne Linie zeigt aktive Accounts pro Zeitfenster. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl. Wenn TikTok zwei Viewer-Felder liefert, bevorzugt die App die größere Gesamtzahl.")
+            render_audience_timeline(viewer_df, presence_df, height=220)
+            st.caption("Die grüne Linie zeigt geschätzt aktuell anwesende sichtbare Accounts. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl. Wenn TikTok zwei Viewer-Felder liefert, bevorzugt die App die größere Gesamtzahl.")
             if not joiners_df.empty:
                 st.caption("Neue sichtbare Beitritte")
                 for _, join_row in joiners_df.head(5).iterrows():
@@ -5454,6 +5807,20 @@ def main():
             else:
                 st.info("Noch keine Supporter-Signale verfügbar.")
 
+            st.subheader("Anwesenheit sichtbarer Accounts")
+            if not presence_summary_df.empty:
+                presence_show = presence_summary_df.copy()
+                presence_show["estimated_presence"] = presence_show["estimated_presence_minutes"].apply(format_duration_minutes)
+                display_table(
+                    presence_show[[
+                        "username", "currently_present", "estimated_presence", "session_count",
+                        "first_seen", "last_seen", "last_source",
+                    ]].head(30),
+                    height=280,
+                )
+            else:
+                st.info("Noch keine sichtbaren Anwesenheitssignale verfügbar.")
+
             st.subheader("Power Index")
             render_power_index(power_df, height=270)
 
@@ -5519,7 +5886,7 @@ def main():
             )
             st.session_state["selected_user_profile"] = selected_profile
             st.caption(f"{len(visible_users)} sichtbare Accounts aus Kommentaren und Live-Events.")
-            render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=False)
+            render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, presence_summary_df, compact=False)
 
             with st.expander("User vergleichen", expanded=False):
                 compare_defaults = [selected_profile]
@@ -5919,6 +6286,8 @@ def main():
                 clusters_df,
                 critical_df,
                 viewer_df,
+                presence_df,
+                presence_summary_df,
                 risk_radar_df,
                 correlation_df,
                 correlation_engine_df,
@@ -6029,6 +6398,9 @@ def main():
                     )
         if not visible_output:
             st.caption("Noch keine KI-Auswertung erzeugt.")
+
+    if selected_main_tab == "Hilfe & Glossar":
+        render_help_center()
 
     st.caption("Shared Dashboard: Datenstand gemeinsam, Filter persönlich. Nur die Basisdaten, Scores und Reports werden über das Board geteilt.")
 
