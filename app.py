@@ -882,7 +882,7 @@ def build_report_html(
             "Zuschauer- und User-Verlauf",
             alt.Chart(audience_df).mark_line(point=True).encode(
                 x=alt.X("bucket:T", title="Zeit"),
-                y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f")),
+                y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f", tickMinStep=1, tickCount=6, labelOverlap=True)),
                 color=alt.Color(
                     "series:N",
                     title="Reihe",
@@ -897,7 +897,7 @@ def build_report_html(
             "Viewer Dynamics",
             alt.Chart(viewer_df).mark_line(point=True).encode(
                 x=alt.X("bucket:T", title="Zeit"),
-                y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f")),
+                y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f", tickMinStep=1, tickCount=6, labelOverlap=True)),
                 tooltip=[
                     "bucket:T",
                     alt.Tooltip("viewer_count:Q", title="Zuschauerzahl", format=".0f"),
@@ -3110,7 +3110,7 @@ def render_viewer_dynamics(viewer_df: pd.DataFrame, height: int = 310):
     base = viewer_df.copy()
     line = alt.Chart(base).mark_line(point=True, color="#2563eb").encode(
         x=alt.X("bucket:T", title="Zeit"),
-        y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f")),
+        y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f", tickMinStep=1, tickCount=6, labelOverlap=True)),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
             alt.Tooltip("viewer_count:Q", title="Zuschauer", format=".0f"),
@@ -3159,7 +3159,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
     plot_df = pd.concat(series_frames, ignore_index=True)
     chart = alt.Chart(plot_df).mark_line(point=True).encode(
         x=alt.X("bucket:T", title="Zeit"),
-        y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f")),
+        y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f", tickMinStep=1, tickCount=6, labelOverlap=True)),
         color=alt.Color(
             "series:N",
             title="Reihe",
@@ -3563,6 +3563,54 @@ def all_visible_users(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> list[
     return sorted(u for u in users if u not in {"SYSTEM", "FEHLER", ""})
 
 
+def visible_account_snapshot(comment_df: pd.DataFrame, event_df: pd.DataFrame, limit: int = 40) -> pd.DataFrame:
+    rows = []
+    if comment_df is not None and not comment_df.empty:
+        comment_recent = (
+            comment_df.sort_values("dt", ascending=False)
+            .groupby("username", as_index=False)
+            .first()
+        )
+        for _, row in comment_recent.iterrows():
+            username = str(row.get("username", "")).strip()
+            if username in {"", "SYSTEM", "FEHLER"}:
+                continue
+            rows.append({
+                "username": username,
+                "last_seen": row.get("timestamp"),
+                "source": "Kommentar",
+                "avatar_url": row.get("avatar_url"),
+            })
+    if event_df is not None and not event_df.empty:
+        event_recent = (
+            event_df.sort_values("dt", ascending=False)
+            .groupby("username", as_index=False)
+            .first()
+        )
+        for _, row in event_recent.iterrows():
+            username = str(row.get("username", "")).strip()
+            if username in {"", "SYSTEM", "FEHLER"}:
+                continue
+            label = row.get("event_label") or row.get("event_type") or "Event"
+            rows.append({
+                "username": username,
+                "last_seen": row.get("timestamp"),
+                "source": str(label),
+                "avatar_url": row.get("avatar_url"),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["username", "last_seen", "source", "avatar_url"])
+    df = pd.DataFrame(rows)
+    df["last_seen_dt"] = pd.to_datetime(df["last_seen"], errors="coerce")
+    df = (
+        df.sort_values("last_seen_dt", ascending=False)
+        .drop_duplicates(subset=["username"], keep="first")
+        .head(limit)
+        .reset_index(drop=True)
+    )
+    return df[["username", "last_seen", "source", "avatar_url"]]
+
+
 def latest_viewer_count(event_df: pd.DataFrame) -> dict:
     if event_df is None or event_df.empty:
         return {"viewer_count": None, "total_viewer_count": None, "timestamp": None}
@@ -3760,7 +3808,12 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
 
 def open_user_insights_view(board_id: str, username: str) -> None:
     st.session_state["selected_user_profile"] = str(username)
+    st.session_state["main_tab"] = "User-Insights"
+    st.session_state["main_tab_selector"] = "User-Insights"
     st.session_state["pending_main_tab"] = "User-Insights"
+    st.query_params["board"] = str(board_id)
+    st.query_params["user"] = str(username)
+    st.query_params["tab"] = "User-Insights"
     st.rerun()
 
 
@@ -5130,6 +5183,24 @@ def main():
                 st.metric("Aktuelle Zuschauerzahl", viewer_state["viewer_count"])
                 if viewer_state.get("total_viewer_count"):
                     st.caption(f"Gesamt-Zuschauer im Eventstrom: {viewer_state['total_viewer_count']}")
+                visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=40)
+                if not visible_accounts_df.empty:
+                    with st.popover(f"Sichtbare Accounts ({len(visible_accounts_df)})"):
+                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
+                        for _, user_row in visible_accounts_df.iterrows():
+                            u_cols = st.columns([0.2, 0.8])
+                            with u_cols[0]:
+                                render_avatar(str(user_row["username"]), user_row.get("avatar_url"), size=28)
+                            with u_cols[1]:
+                                if st.button(
+                                    str(user_row["username"]),
+                                    key=f"viewer_visible_user_{user_row.name}",
+                                    help=f"Zuletzt sichtbar über: {user_row.get('source', '-')}",
+                                ):
+                                    open_user_insights_view(board_id, str(user_row["username"]))
+                                st.caption(f"{user_row.get('source', '-')} · {user_row.get('last_seen', '-')}")
+                else:
+                    st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
             render_audience_timeline(viewer_df, height=220)
