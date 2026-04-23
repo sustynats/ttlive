@@ -5064,7 +5064,7 @@ def main():
                         render_avatar(str(row["username"]), row.get("avatar_url"), size=42)
                     with content_col:
                         open_profile = st.button(
-                            "User-Insights",
+                            str(row["username"]),
                             key=f"open_user_insights_{row_idx}",
                             type="tertiary",
                             help="User-Insights für diesen Account öffnen",
@@ -5075,7 +5075,7 @@ def main():
                             f"""
                             <div class="chat-item {heat_class}">
                                 <div class="chat-main">
-                                    <span style="color:{username_col}; font-weight:700;">{safe_username}</span>: {safe_text}
+                                    <span style="color:#0f172a;">{safe_text}</span>
                                 </div>
                                 <div style="margin-top:.25rem;">{badge_html}</div>
                                 <div class="chat-meta">{ts}</div>
