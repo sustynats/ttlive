@@ -3758,6 +3758,12 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
             display_table(activity[["timestamp", "event_label", "text"]].head(8), height=230)
 
 
+def open_user_insights_view(board_id: str, username: str) -> None:
+    st.session_state["selected_user_profile"] = str(username)
+    st.session_state["pending_main_tab"] = "User-Insights"
+    st.rerun()
+
+
 def user_detail_snapshot(comment_df: pd.DataFrame, username: str) -> dict:
     if comment_df.empty or not username:
         return {}
@@ -4504,6 +4510,7 @@ def init_state():
         "selected_user_profile": "",
         "live_username_input": "",
         "main_tab": "Lagebild",
+        "pending_main_tab": None,
         "last_query_tab": None,
         "auto_refresh_enabled": False,
         "auto_refresh_toggle": False,
@@ -4547,6 +4554,10 @@ def main():
     if query_tab and str(query_tab) in valid_main_tabs and str(query_tab) != st.session_state.get("last_query_tab"):
         st.session_state["main_tab"] = str(query_tab)
         st.session_state["last_query_tab"] = str(query_tab)
+    pending_tab = st.session_state.get("pending_main_tab")
+    if pending_tab and str(pending_tab) in valid_main_tabs:
+        st.session_state["main_tab"] = str(pending_tab)
+        st.session_state["pending_main_tab"] = None
 
     st.markdown("""
     <style>
@@ -5054,17 +5065,13 @@ def main():
                         render_avatar(str(row["username"]), row.get("avatar_url"), size=42)
                     with content_col:
                         open_profile = st.button(
-                            str(row["username"]),
+                            "User-Insights",
                             key=f"open_user_insights_{row_idx}",
                             type="tertiary",
                             help="User-Insights für diesen Account öffnen",
                         )
                         if open_profile:
-                            st.session_state["selected_user_profile"] = str(row["username"])
-                            st.session_state["main_tab"] = "User-Insights"
-                            st.query_params["tab"] = "User-Insights"
-                            st.query_params["user"] = str(row["username"])
-                            st.rerun()
+                            open_user_insights_view(board_id, str(row["username"]))
                         st.markdown(
                             f"""
                             <div class="chat-item {heat_class}">
@@ -5131,11 +5138,7 @@ def main():
                         render_avatar(str(join_row["username"]), join_row.get("avatar_url"), size=30)
                     with j_cols[1]:
                         if st.button(str(join_row["username"]), key=f"join_profile_{join_row.name}", help="Userprofil öffnen"):
-                            st.session_state["selected_user_profile"] = str(join_row["username"])
-                            st.session_state["main_tab"] = "User-Insights"
-                            st.query_params["tab"] = "User-Insights"
-                            st.query_params["user"] = str(join_row["username"])
-                            st.rerun()
+                            open_user_insights_view(board_id, str(join_row["username"]))
             else:
                 st.caption("Noch keine Join-Events.")
 
