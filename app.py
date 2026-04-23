@@ -320,6 +320,34 @@ def now_ts() -> str:
     return now_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def format_relative_age(ts_value) -> str:
+    if not ts_value:
+        return "-"
+    try:
+        dt_value = pd.to_datetime(ts_value, errors="coerce")
+        if pd.isna(dt_value):
+            return "-"
+        if getattr(dt_value, "tzinfo", None) is None:
+            dt_value = dt_value.tz_localize(TZ)
+        else:
+            dt_value = dt_value.tz_convert(TZ)
+        seconds = max(int((now_dt() - dt_value.to_pydatetime()).total_seconds()), 0)
+    except Exception:
+        return "-"
+    if seconds < 10:
+        return "gerade eben"
+    if seconds < 60:
+        return f"vor {seconds} Sek."
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"vor {minutes} Min."
+    hours = minutes // 60
+    if hours < 24:
+        return f"vor {hours} Std."
+    days = hours // 24
+    return f"vor {days} Tag(en)"
+
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20)
     conn.row_factory = sqlite3.Row
@@ -5805,6 +5833,9 @@ def main():
             st.session_state.get("listener_thread")
             and st.session_state.listener_thread.is_alive()
         )
+        if listener_running and not st.session_state.get("ai_pending") and not st.session_state.get("auto_refresh_enabled"):
+            st.session_state["auto_refresh_enabled"] = True
+            st.session_state["auto_refresh_toggle"] = True
         start_disabled = not board_id or not username_input.strip() or listener_running
         start_help = (
             "Der Listener läuft bereits in dieser Browser-Session."
@@ -5894,6 +5925,9 @@ def main():
     comment_messages = get_comment_messages(all_messages)
     comment_df = build_dataframe(comment_messages)
     event_detail_df = build_event_dataframe(all_messages)
+    last_message = all_messages[-1] if all_messages else None
+    last_message_ts = last_message.get("timestamp") if isinstance(last_message, dict) else None
+    latest_db_id = latest_message_id(board_id) if board_id else 0
 
     all_users = ["Alle"] + sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else ["Alle"]
     with st.sidebar:
@@ -6634,6 +6668,10 @@ def main():
                 )
 
             st.subheader("Joins & Zuschauer", help=GLOSSARY["Viewer Count"])
+            status_cols = st.columns(3)
+            status_cols[0].metric("Listener", "läuft" if listener_running else "aus")
+            status_cols[1].metric("Letzte Nachricht", format_relative_age(last_message_ts))
+            status_cols[2].metric("DB-Stand", latest_db_id)
             total_visible_accounts_df = presence_summary_df.copy()
             visible_accounts_df = total_visible_accounts_df[total_visible_accounts_df["currently_present"]].copy()
             visible_accounts_df = visible_accounts_df.head(40).reset_index(drop=True)
