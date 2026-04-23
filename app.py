@@ -497,6 +497,28 @@ def safe_media_url(media_obj) -> str | None:
     return None
 
 
+def is_valid_image_url(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if not value.lower().startswith(("http://", "https://")):
+        return False
+    if value.lower() in {"none", "nan", "null", "false"}:
+        return False
+    return True
+
+
+def render_avatar(username: str, avatar_url=None, size: int = 42):
+    if is_valid_image_url(avatar_url):
+        st.image(str(avatar_url).strip(), width=size)
+        return
+    font_size = max(0.62, min(1.1, size / 66))
+    st.markdown(
+        f'<div class="avatar-fallback" style="background:{user_color(str(username))}; width:{size}px; height:{size}px; font-size:{font_size:.2f}rem;">{initials(str(username))}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def first_attr(obj, names: list[str], default=None):
     if obj is None:
         return default
@@ -2128,7 +2150,7 @@ def user_avatar_url(username: str, comment_df: pd.DataFrame, event_df: pd.DataFr
         rows = df[(df["username"] == username) & df["avatar_url"].notna()]
         if not rows.empty:
             url = str(rows.sort_values("dt", ascending=False).iloc[0]["avatar_url"])
-            if url.startswith("http"):
+            if is_valid_image_url(url):
                 return url
     return None
 
@@ -2255,13 +2277,7 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
 
     header_cols = st.columns([0.13, 0.87])
     with header_cols[0]:
-        if avatar:
-            st.image(avatar, width=72)
-        else:
-            st.markdown(
-                f'<div class="avatar-fallback" style="background:{user_color(username)}; width:72px; height:72px; font-size:1.1rem;">{initials(username)}</div>',
-                unsafe_allow_html=True,
-            )
+        render_avatar(username, avatar, size=72)
     with header_cols[1]:
         st.subheader(username)
         meta_bits = []
@@ -3538,13 +3554,7 @@ def main():
 
                     avatar_col, content_col = st.columns([0.09, 0.91], gap="small")
                     with avatar_col:
-                        if row.get("avatar_url"):
-                            st.image(row["avatar_url"], width=42)
-                        else:
-                            st.markdown(
-                                f'<div class="avatar-fallback" style="background:{username_col};">{initials(row["username"])} </div>',
-                                unsafe_allow_html=True,
-                            )
+                        render_avatar(str(row["username"]), row.get("avatar_url"), size=42)
                     with content_col:
                         if st.button(
                             str(row["username"]),
@@ -3619,13 +3629,7 @@ def main():
                 for _, join_row in joiners_df.head(5).iterrows():
                     j_cols = st.columns([0.18, 0.82])
                     with j_cols[0]:
-                        if join_row.get("avatar_url"):
-                            st.image(join_row["avatar_url"], width=30)
-                        else:
-                            st.markdown(
-                                f'<div class="avatar-fallback" style="background:{user_color(str(join_row["username"]))}; width:30px; height:30px; font-size:.65rem;">{initials(str(join_row["username"]))}</div>',
-                                unsafe_allow_html=True,
-                            )
+                        render_avatar(str(join_row["username"]), join_row.get("avatar_url"), size=30)
                     with j_cols[1]:
                         if st.button(str(join_row["username"]), key=f"join_profile_{join_row.name}", help="Userprofil öffnen"):
                             st.session_state["selected_user_profile"] = str(join_row["username"])
