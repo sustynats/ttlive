@@ -3753,6 +3753,17 @@ def render_audience_timeline(viewer_df: pd.DataFrame, api_visible_df: pd.DataFra
             .rename(columns={"api_visible_count": "count"})
             .assign(series="Sichtbare Zuschauer (API)")
         )
+    if (
+        viewer_df is not None
+        and not viewer_df.empty
+        and "active_users" in viewer_df.columns
+        and float(viewer_df["active_users"].max()) > 0
+    ):
+        series_frames.append(
+            viewer_df[["bucket", "active_users"]]
+            .rename(columns={"active_users": "count"})
+            .assign(series="Sichtbar aktive User")
+        )
     if not series_frames:
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
         return
@@ -3763,7 +3774,10 @@ def render_audience_timeline(viewer_df: pd.DataFrame, api_visible_df: pd.DataFra
         color=alt.Color(
             "series:N",
             title="Reihe",
-            scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbare Zuschauer (API)"], range=["#2563eb", "#16a34a"]),
+            scale=alt.Scale(
+                domain=["Zuschauer gesamt", "Sichtbare Zuschauer (API)", "Sichtbar aktive User"],
+                range=["#2563eb", "#16a34a", "#f59e0b"],
+            ),
         ),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
@@ -6418,7 +6432,7 @@ def main():
         kpi_b.metric("API-Reichweite seit Start", est_total_reach)
         kpi_c.metric("Sichtbare Accounts im Verlauf", visible_cumulative)
         kpi_d.metric("Kommentar-Aktivitätsquote", f"{activity_rate_now*100:.1f}%")
-        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Die Reichweiten-KPI darüber ist ebenfalls API-basiert; heuristische Account-Analysen stehen separat daneben.")
+        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Falls TikTok gerade keine Viewer-Events liefert, zeigt die orange Linie stattdessen den Verlauf sichtbar aktiver Accounts aus Kommentaren und Live-Events.")
         reach_left, reach_right = st.columns(2)
         with reach_left:
             st.subheader("Kumulierte Reichweite")
@@ -6722,7 +6736,7 @@ def main():
             else:
                 st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             render_audience_timeline(viewer_df, api_visible_df, height=220)
-            st.caption("Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Die blaue Linie zeigt die von TikTok gemeldete Gesamt-Zuschauerzahl. Heuristische Anwesenheitslisten stehen separat darunter.")
+            st.caption("Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Die blaue Linie zeigt die von TikTok gemeldete Gesamt-Zuschauerzahl. Wenn diese Viewer-Werte gerade fehlen, zeigt die orange Linie den Verlauf sichtbar aktiver Accounts aus Kommentaren und Live-Events.")
             with st.expander("Reichweite & Aktivitätsquote", expanded=False):
                 r1, r2 = st.columns(2)
                 with r1:
