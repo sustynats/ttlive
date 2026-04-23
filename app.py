@@ -82,6 +82,8 @@ GLOBAL_TOOLTIPS = {
 }
 
 GLOSSARY = {
+    "Google-Login": "Die App kann mit Streamlits OIDC-Login ueber Google geschuetzt werden. Nach erfolgreichem Login prueft die App die E-Mail-Adresse gegen eine gepflegte Allowlist.",
+    "Freigegebene E-Mails": "Liste erlaubter E-Mail-Adressen in den Secrets. Nur diese Konten duerfen die App nach dem Login verwenden.",
     "Explain Mode": "Blendet zusätzliche Begründungen zu den fünf Wirkungsfeldern ein. Er erklärt, welche Messwerte den aktuellen Score besonders beeinflusst haben.",
     "Live-Ampel": "Verdichtet die aktuelle Lage aus Wirkungsfeldern, Triggern, Abwertung, Dominanz, Wiederholungen und auffälligen Accounts zu 0-100 Punkten.",
     "Shift-Score": GLOBAL_TOOLTIPS["shift_score"],
@@ -853,6 +855,40 @@ def render_glossary(keys: list[str] | None = None):
 def render_help_center():
     st.subheader("Hilfe & Glossar")
     st.caption("Kurze Orientierung dazu, was die wichtigsten Zahlen bedeuten, wo du sie findest und wie du sie sinnvoll lesen kannst.")
+
+    st.markdown("**0. Zugang & Freigaben**")
+    auth_rows = [
+        {
+            "Thema": "Google-Login",
+            "Bedeutung": "Die App kann per Streamlit-OIDC ueber Google geschuetzt werden.",
+            "Konfiguration": "In den Streamlit-Secrets den Block [auth] mit redirect_uri, cookie_secret, client_id, client_secret und server_metadata_url hinterlegen.",
+        },
+        {
+            "Thema": "Freigegebene E-Mails",
+            "Bedeutung": "Nur hinterlegte Adressen duerfen nach dem Google-Login in die App.",
+            "Konfiguration": "ALLOWED_EMAILS als Liste oder kommagetrennte Zeichenkette in den Secrets pflegen.",
+        },
+        {
+            "Thema": "Abmelden",
+            "Bedeutung": "Beendet die aktuelle App-Session und loescht das Auth-Cookie fuer diese Sitzung.",
+            "Konfiguration": "Ueber den Abmelden-Button in der Sidebar.",
+        },
+    ]
+    display_table(pd.DataFrame(auth_rows), height=190)
+    with st.expander("Secrets fuer Google-Login", expanded=False):
+        st.code(
+            """
+[auth]
+redirect_uri = "https://DEINE-APP.streamlit.app/oauth2callback"
+cookie_secret = "lange-zufaellige-cookie-secret"
+client_id = "google-client-id"
+client_secret = "google-client-secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+ALLOWED_EMAILS = ["name@example.com", "team@example.com"]
+            """.strip(),
+            language="toml",
+        )
 
     st.markdown("**1. So liest du das Dashboard**")
     guide_rows = [
@@ -4993,6 +5029,144 @@ def get_google_api_key() -> str | None:
     return None
 
 
+def get_auth_secret() -> dict:
+    try:
+        auth_secret = st.secrets.get("auth", {})
+        if hasattr(auth_secret, "to_dict"):
+            return dict(auth_secret.to_dict())
+        return dict(auth_secret) if auth_secret else {}
+    except Exception:
+        return {}
+
+
+def auth_is_configured() -> bool:
+    auth_secret = get_auth_secret()
+    required_keys = {"redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url"}
+    return required_keys.issubset({str(key) for key in auth_secret.keys()})
+
+
+def parse_allowed_emails(value) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        raw_items = re.split(r"[\n,;]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    return {
+        str(item).strip().lower()
+        for item in raw_items
+        if str(item).strip()
+    }
+
+
+def get_allowed_emails() -> set[str]:
+    secret_names = ["ALLOWED_EMAILS", "AUTH_ALLOWED_EMAILS", "allowed_emails"]
+    for name in secret_names:
+        try:
+            if name in st.secrets:
+                emails = parse_allowed_emails(st.secrets[name])
+                if emails:
+                    return emails
+        except Exception:
+            pass
+    for name in secret_names:
+        env_value = os.getenv(name)
+        if env_value:
+            emails = parse_allowed_emails(env_value)
+            if emails:
+                return emails
+    return set()
+
+
+def get_user_email() -> str:
+    try:
+        value = getattr(st.user, "email", "") or st.user.get("email", "")
+    except Exception:
+        value = ""
+    return str(value).strip().lower()
+
+
+def get_user_display_name() -> str:
+    try:
+        name = getattr(st.user, "name", "") or st.user.get("name", "")
+    except Exception:
+        name = ""
+    if str(name).strip():
+        return str(name).strip()
+    email = get_user_email()
+    return email or "Unbekannt"
+
+
+def render_login_screen(auth_ready: bool, allowed_emails: set[str]):
+    st.markdown(
+        """
+        <div class="card" style="max-width: 620px; margin: 3rem auto 0 auto; padding: 1.25rem 1.3rem;">
+            <h2 style="margin:0 0 .4rem 0;">Geschützter Zugang</h2>
+            <p style="margin:0 0 .8rem 0; color:#475569;">
+                Dieses Dashboard ist nur für freigegebene Google-Konten erreichbar.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if not auth_ready:
+        st.error(
+            "Google-Authentifizierung ist noch nicht vollständig konfiguriert. "
+            "Bitte hinterlege die OIDC-Daten in den Streamlit-Secrets."
+        )
+        with st.expander("Secrets-Beispiel", expanded=False):
+            st.code(
+                """
+[auth]
+redirect_uri = "https://DEINE-APP.streamlit.app/oauth2callback"
+cookie_secret = "lange-zufaellige-cookie-secret"
+client_id = "google-client-id"
+client_secret = "google-client-secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+ALLOWED_EMAILS = ["name@example.com", "team@example.com"]
+                """.strip(),
+                language="toml",
+            )
+        st.stop()
+
+    if allowed_emails:
+        st.caption(
+            f"Freigabe aktuell ueber {len(allowed_emails)} hinterlegte E-Mail-Adresse(n). "
+            "Nur diese Konten duerfen die App oeffnen."
+        )
+    st.button("Mit Google anmelden", type="primary", use_container_width=True, on_click=st.login)
+    st.stop()
+
+
+def enforce_google_auth():
+    auth_ready = auth_is_configured()
+    allowed_emails = get_allowed_emails()
+
+    if not auth_ready and not allowed_emails:
+        return None
+
+    is_logged_in = bool(getattr(st.user, "is_logged_in", False))
+    if not is_logged_in:
+        render_login_screen(auth_ready, allowed_emails)
+
+    email = get_user_email()
+    if allowed_emails and email not in allowed_emails:
+        st.error(
+            f"Das Google-Konto {email or '(ohne E-Mail im Token)'} ist nicht fuer diese App freigeschaltet."
+        )
+        st.caption("Bitte mit einem freigegebenen Konto neu anmelden oder die Allowlist erweitern.")
+        st.button("Mit anderem Google-Konto anmelden", use_container_width=True, on_click=st.logout)
+        st.stop()
+
+    return {
+        "email": email,
+        "name": get_user_display_name(),
+    }
+
+
 def df_records(df: pd.DataFrame, limit: int = 20) -> list[dict]:
     if df is None or df.empty:
         return []
@@ -5432,6 +5606,7 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="💬", layout="wide")
     init_db()
     init_state()
+    auth_user = enforce_google_auth()
     if st.session_state.get("ai_pending"):
         st.session_state["ai_pending"] = None
     st.session_state["auto_refresh_toggle"] = st.session_state.get("auto_refresh_enabled", False)
@@ -5514,6 +5689,11 @@ def main():
     """, unsafe_allow_html=True)
 
     with st.sidebar:
+        if auth_user:
+            st.caption(f"Angemeldet als {auth_user['name']}")
+            st.caption(auth_user["email"])
+            st.button("Abmelden", use_container_width=True, on_click=st.logout)
+            st.divider()
         st.header("1. Analyse-Raum wählen")
         st.caption("Ein Analyse-Raum sammelt die Chatdaten eines Lives. Du kannst einen neuen Raum öffnen oder eine vorhandene Board-ID eintragen.")
         if st.button(
@@ -5687,73 +5867,331 @@ def main():
         "only_toxic": st.session_state.get("feed_only_toxic", False),
     }
     filtered_df = filtered_comment_df(comment_df, filters)
-    summary = summarize_heuristics(comment_df)
-    scores_df = user_scores(comment_df)
-    clusters_df = build_clusters(comment_df, max_clusters=8)
-    impact = impact_scores(comment_df, scores_df, clusters_df)
-    impact_explanations = explain_impact_scores(comment_df, scores_df, clusters_df, impact)
-    roles = role_summary(scores_df)
-    event_df = event_overview(all_messages)
-    event_metrics = live_event_metrics(event_detail_df)
-    event_timeline_df = event_timeline(event_detail_df)
-    viewer_df = viewer_dynamics(comment_df, event_detail_df)
-    api_visible_df = api_visible_viewer_timeline(event_detail_df)
-    presence_df = visible_presence_timeline(comment_df, event_detail_df)
-    commenter_presence_df = visible_presence_timeline(comment_df, pd.DataFrame())
-    presence_summary_df = visible_presence_summary(comment_df, event_detail_df)
-    cumulative_visible_df = visible_cumulative_timeline(comment_df, event_detail_df)
-    audience_df = audience_approximation_frame(viewer_df, presence_df, commenter_presence_df, cumulative_visible_df)
-    current_visible_accounts_df = presence_summary_df[presence_summary_df["currently_present"]].copy() if not presence_summary_df.empty else pd.DataFrame()
-    correlation_df = temporal_correlation_signals(viewer_df)
-    correlation_engine_df = event_correlation_engine(comment_df, event_detail_df)
-    hold_df, hold_summary = hold_rate_metrics(viewer_df)
-    dialog_df, dialog_summary = dialog_metrics(comment_df)
-    returner_df, returner_summary = returner_metrics(presence_summary_df)
-    gift_users_df = gift_leaderboard(event_detail_df)
-    gift_types_df = gift_type_matrix(event_detail_df)
-    funnel_df = activation_funnel(comment_df, event_detail_df)
-    conversion_flow_df = viewer_conversion_flow(comment_df, event_detail_df)
-    support_df = supporter_matrix(comment_df, event_detail_df)
-    supporter_lifecycle_df = supporter_lifecycle(support_df)
-    viewer_state = latest_viewer_count(event_detail_df)
-    api_visible_now = safe_int(viewer_state.get("raw_viewer_count"), 0) if viewer_state else 0
-    joiners_df = recent_joiners(event_detail_df)
-    repeat_df_global = repeated_messages(comment_df, min_count=2)
-    live_ampel = compute_live_ampel(comment_df, scores_df, impact)
-    alerts = compute_alerts(comment_df, scores_df, impact)
-    drift_df = narrative_drift(comment_df)
-    narrative_timeline_df = live_narrative_timeline(comment_df)
-    mention_df = mention_edges(comment_df)
-    influencer_df = influencer_map(comment_df)
-    graph2_nodes_df, graph2_edges_df = influencer_graph_2(comment_df)
-    communities_df = community_detection(comment_df, graph2_edges_df)
-    greeting_df = greeting_edges(comment_df)
-    critical_df = critical_moments(comment_df)
-    critical_brief_df = critical_moment_brief(critical_df, viewer_df)
-    recovery_df, recovery_summary = recovery_time_metrics(critical_df)
-    escalation_momentum = escalation_momentum_metrics(critical_df, viewer_df)
-    fairness = fairness_metrics(comment_df)
-    trigger_df = trigger_effect_analysis(comment_df)
-    push_df = narrative_push_detection(comment_df)
-    archetype_df = user_archetypes(comment_df, scores_df)
-    attention_df = attention_vs_substance(comment_df)
-    influence_df = influence_scores(comment_df, scores_df, influencer_df, support_df)
-    narrative_half_life_df, narrative_half_life_summary = narrative_half_life_metrics(narrative_timeline_df)
-    topic_gift_df, topic_gift_summary = topic_to_gift_metrics(narrative_timeline_df, event_detail_df)
-    power_df = power_index(comment_df, scores_df, influencer_df, support_df, influence_df)
-    risk_radar_df = live_risk_radar(comment_df, scores_df, impact, viewer_df, support_df)
-    host_copilot_df = host_copilot_suggestions(comment_df, correlation_df, risk_radar_df, push_df)
-    indices_df = wirkung_indices(comment_df, impact, fairness, push_df, risk_radar_df)
-    revenue_df = revenue_trigger_detection(comment_df, event_detail_df)
-    cross_live_df, creator_benchmark_df, global_narratives_df = platform_intelligence()
-    phase_label = phase_of_live(comment_df)
+    analytics_cache: dict[str, object] = {}
+
+    def get_summary():
+        if "summary" not in analytics_cache:
+            analytics_cache["summary"] = summarize_heuristics(comment_df)
+        return analytics_cache["summary"]
+
+    def get_scores_df():
+        if "scores_df" not in analytics_cache:
+            analytics_cache["scores_df"] = user_scores(comment_df)
+        return analytics_cache["scores_df"]
+
+    def get_clusters_df():
+        if "clusters_df" not in analytics_cache:
+            analytics_cache["clusters_df"] = build_clusters(comment_df, max_clusters=8)
+        return analytics_cache["clusters_df"]
+
+    def get_impact():
+        if "impact" not in analytics_cache:
+            analytics_cache["impact"] = impact_scores(comment_df, get_scores_df(), get_clusters_df())
+        return analytics_cache["impact"]
+
+    def get_impact_explanations():
+        if "impact_explanations" not in analytics_cache:
+            analytics_cache["impact_explanations"] = explain_impact_scores(comment_df, get_scores_df(), get_clusters_df(), get_impact())
+        return analytics_cache["impact_explanations"]
+
+    def get_roles():
+        if "roles" not in analytics_cache:
+            analytics_cache["roles"] = role_summary(get_scores_df())
+        return analytics_cache["roles"]
+
+    def get_event_df():
+        if "event_df" not in analytics_cache:
+            analytics_cache["event_df"] = event_overview(all_messages)
+        return analytics_cache["event_df"]
+
+    def get_event_metrics():
+        if "event_metrics" not in analytics_cache:
+            analytics_cache["event_metrics"] = live_event_metrics(event_detail_df)
+        return analytics_cache["event_metrics"]
+
+    def get_event_timeline_df():
+        if "event_timeline_df" not in analytics_cache:
+            analytics_cache["event_timeline_df"] = event_timeline(event_detail_df)
+        return analytics_cache["event_timeline_df"]
+
+    def get_viewer_df():
+        if "viewer_df" not in analytics_cache:
+            analytics_cache["viewer_df"] = viewer_dynamics(comment_df, event_detail_df)
+        return analytics_cache["viewer_df"]
+
+    def get_api_visible_df():
+        if "api_visible_df" not in analytics_cache:
+            analytics_cache["api_visible_df"] = api_visible_viewer_timeline(event_detail_df)
+        return analytics_cache["api_visible_df"]
+
+    def get_presence_df():
+        if "presence_df" not in analytics_cache:
+            analytics_cache["presence_df"] = visible_presence_timeline(comment_df, event_detail_df)
+        return analytics_cache["presence_df"]
+
+    def get_commenter_presence_df():
+        if "commenter_presence_df" not in analytics_cache:
+            analytics_cache["commenter_presence_df"] = visible_presence_timeline(comment_df, pd.DataFrame())
+        return analytics_cache["commenter_presence_df"]
+
+    def get_presence_summary_df():
+        if "presence_summary_df" not in analytics_cache:
+            analytics_cache["presence_summary_df"] = visible_presence_summary(comment_df, event_detail_df)
+        return analytics_cache["presence_summary_df"]
+
+    def get_cumulative_visible_df():
+        if "cumulative_visible_df" not in analytics_cache:
+            analytics_cache["cumulative_visible_df"] = visible_cumulative_timeline(comment_df, event_detail_df)
+        return analytics_cache["cumulative_visible_df"]
+
+    def get_audience_df():
+        if "audience_df" not in analytics_cache:
+            analytics_cache["audience_df"] = audience_approximation_frame(
+                get_viewer_df(),
+                get_presence_df(),
+                get_commenter_presence_df(),
+                get_cumulative_visible_df(),
+            )
+        return analytics_cache["audience_df"]
+
+    def get_current_visible_accounts_df():
+        if "current_visible_accounts_df" not in analytics_cache:
+            presence_summary_df = get_presence_summary_df()
+            analytics_cache["current_visible_accounts_df"] = (
+                presence_summary_df[presence_summary_df["currently_present"]].copy()
+                if not presence_summary_df.empty
+                else pd.DataFrame()
+            )
+        return analytics_cache["current_visible_accounts_df"]
+
+    def get_correlation_df():
+        if "correlation_df" not in analytics_cache:
+            analytics_cache["correlation_df"] = temporal_correlation_signals(get_viewer_df())
+        return analytics_cache["correlation_df"]
+
+    def get_correlation_engine_df():
+        if "correlation_engine_df" not in analytics_cache:
+            analytics_cache["correlation_engine_df"] = event_correlation_engine(comment_df, event_detail_df)
+        return analytics_cache["correlation_engine_df"]
+
+    def get_hold_metrics():
+        if "hold_metrics" not in analytics_cache:
+            analytics_cache["hold_metrics"] = hold_rate_metrics(get_viewer_df())
+        return analytics_cache["hold_metrics"]
+
+    def get_dialog_metrics():
+        if "dialog_metrics" not in analytics_cache:
+            analytics_cache["dialog_metrics"] = dialog_metrics(comment_df)
+        return analytics_cache["dialog_metrics"]
+
+    def get_returner_metrics():
+        if "returner_metrics" not in analytics_cache:
+            analytics_cache["returner_metrics"] = returner_metrics(get_presence_summary_df())
+        return analytics_cache["returner_metrics"]
+
+    def get_gift_users_df():
+        if "gift_users_df" not in analytics_cache:
+            analytics_cache["gift_users_df"] = gift_leaderboard(event_detail_df)
+        return analytics_cache["gift_users_df"]
+
+    def get_gift_types_df():
+        if "gift_types_df" not in analytics_cache:
+            analytics_cache["gift_types_df"] = gift_type_matrix(event_detail_df)
+        return analytics_cache["gift_types_df"]
+
+    def get_funnel_df():
+        if "funnel_df" not in analytics_cache:
+            analytics_cache["funnel_df"] = activation_funnel(comment_df, event_detail_df)
+        return analytics_cache["funnel_df"]
+
+    def get_conversion_flow_df():
+        if "conversion_flow_df" not in analytics_cache:
+            analytics_cache["conversion_flow_df"] = viewer_conversion_flow(comment_df, event_detail_df)
+        return analytics_cache["conversion_flow_df"]
+
+    def get_support_df():
+        if "support_df" not in analytics_cache:
+            analytics_cache["support_df"] = supporter_matrix(comment_df, event_detail_df)
+        return analytics_cache["support_df"]
+
+    def get_supporter_lifecycle_df():
+        if "supporter_lifecycle_df" not in analytics_cache:
+            analytics_cache["supporter_lifecycle_df"] = supporter_lifecycle(get_support_df())
+        return analytics_cache["supporter_lifecycle_df"]
+
+    def get_viewer_state():
+        if "viewer_state" not in analytics_cache:
+            analytics_cache["viewer_state"] = latest_viewer_count(event_detail_df)
+        return analytics_cache["viewer_state"]
+
+    def get_api_visible_now():
+        if "api_visible_now" not in analytics_cache:
+            viewer_state = get_viewer_state()
+            analytics_cache["api_visible_now"] = safe_int(viewer_state.get("raw_viewer_count"), 0) if viewer_state else 0
+        return analytics_cache["api_visible_now"]
+
+    def get_joiners_df():
+        if "joiners_df" not in analytics_cache:
+            analytics_cache["joiners_df"] = recent_joiners(event_detail_df)
+        return analytics_cache["joiners_df"]
+
+    def get_repeat_df_global():
+        if "repeat_df_global" not in analytics_cache:
+            analytics_cache["repeat_df_global"] = repeated_messages(comment_df, min_count=2)
+        return analytics_cache["repeat_df_global"]
+
+    def get_live_ampel():
+        if "live_ampel" not in analytics_cache:
+            analytics_cache["live_ampel"] = compute_live_ampel(comment_df, get_scores_df(), get_impact())
+        return analytics_cache["live_ampel"]
+
+    def get_alerts():
+        if "alerts" not in analytics_cache:
+            analytics_cache["alerts"] = compute_alerts(comment_df, get_scores_df(), get_impact())
+        return analytics_cache["alerts"]
+
+    def get_drift_df():
+        if "drift_df" not in analytics_cache:
+            analytics_cache["drift_df"] = narrative_drift(comment_df)
+        return analytics_cache["drift_df"]
+
+    def get_narrative_timeline_df():
+        if "narrative_timeline_df" not in analytics_cache:
+            analytics_cache["narrative_timeline_df"] = live_narrative_timeline(comment_df)
+        return analytics_cache["narrative_timeline_df"]
+
+    def get_mention_df():
+        if "mention_df" not in analytics_cache:
+            analytics_cache["mention_df"] = mention_edges(comment_df)
+        return analytics_cache["mention_df"]
+
+    def get_influencer_df():
+        if "influencer_df" not in analytics_cache:
+            analytics_cache["influencer_df"] = influencer_map(comment_df)
+        return analytics_cache["influencer_df"]
+
+    def get_graph2():
+        if "graph2" not in analytics_cache:
+            analytics_cache["graph2"] = influencer_graph_2(comment_df)
+        return analytics_cache["graph2"]
+
+    def get_communities_df():
+        if "communities_df" not in analytics_cache:
+            graph2_nodes_df, graph2_edges_df = get_graph2()
+            analytics_cache["communities_df"] = community_detection(comment_df, graph2_edges_df)
+        return analytics_cache["communities_df"]
+
+    def get_greeting_df():
+        if "greeting_df" not in analytics_cache:
+            analytics_cache["greeting_df"] = greeting_edges(comment_df)
+        return analytics_cache["greeting_df"]
+
+    def get_critical_df():
+        if "critical_df" not in analytics_cache:
+            analytics_cache["critical_df"] = critical_moments(comment_df)
+        return analytics_cache["critical_df"]
+
+    def get_critical_brief_df():
+        if "critical_brief_df" not in analytics_cache:
+            analytics_cache["critical_brief_df"] = critical_moment_brief(get_critical_df(), get_viewer_df())
+        return analytics_cache["critical_brief_df"]
+
+    def get_recovery_metrics():
+        if "recovery_metrics" not in analytics_cache:
+            analytics_cache["recovery_metrics"] = recovery_time_metrics(get_critical_df())
+        return analytics_cache["recovery_metrics"]
+
+    def get_escalation_momentum():
+        if "escalation_momentum" not in analytics_cache:
+            analytics_cache["escalation_momentum"] = escalation_momentum_metrics(get_critical_df(), get_viewer_df())
+        return analytics_cache["escalation_momentum"]
+
+    def get_fairness():
+        if "fairness" not in analytics_cache:
+            analytics_cache["fairness"] = fairness_metrics(comment_df)
+        return analytics_cache["fairness"]
+
+    def get_trigger_df():
+        if "trigger_df" not in analytics_cache:
+            analytics_cache["trigger_df"] = trigger_effect_analysis(comment_df)
+        return analytics_cache["trigger_df"]
+
+    def get_push_df():
+        if "push_df" not in analytics_cache:
+            analytics_cache["push_df"] = narrative_push_detection(comment_df)
+        return analytics_cache["push_df"]
+
+    def get_archetype_df():
+        if "archetype_df" not in analytics_cache:
+            analytics_cache["archetype_df"] = user_archetypes(comment_df, get_scores_df())
+        return analytics_cache["archetype_df"]
+
+    def get_attention_df():
+        if "attention_df" not in analytics_cache:
+            analytics_cache["attention_df"] = attention_vs_substance(comment_df)
+        return analytics_cache["attention_df"]
+
+    def get_influence_df():
+        if "influence_df" not in analytics_cache:
+            analytics_cache["influence_df"] = influence_scores(comment_df, get_scores_df(), get_influencer_df(), get_support_df())
+        return analytics_cache["influence_df"]
+
+    def get_narrative_half_life_metrics():
+        if "narrative_half_life_metrics" not in analytics_cache:
+            analytics_cache["narrative_half_life_metrics"] = narrative_half_life_metrics(get_narrative_timeline_df())
+        return analytics_cache["narrative_half_life_metrics"]
+
+    def get_topic_gift_metrics():
+        if "topic_gift_metrics" not in analytics_cache:
+            analytics_cache["topic_gift_metrics"] = topic_to_gift_metrics(get_narrative_timeline_df(), event_detail_df)
+        return analytics_cache["topic_gift_metrics"]
+
+    def get_power_df():
+        if "power_df" not in analytics_cache:
+            analytics_cache["power_df"] = power_index(comment_df, get_scores_df(), get_influencer_df(), get_support_df(), get_influence_df())
+        return analytics_cache["power_df"]
+
+    def get_risk_radar_df():
+        if "risk_radar_df" not in analytics_cache:
+            analytics_cache["risk_radar_df"] = live_risk_radar(comment_df, get_scores_df(), get_impact(), get_viewer_df(), get_support_df())
+        return analytics_cache["risk_radar_df"]
+
+    def get_host_copilot_df():
+        if "host_copilot_df" not in analytics_cache:
+            analytics_cache["host_copilot_df"] = host_copilot_suggestions(comment_df, get_correlation_df(), get_risk_radar_df(), get_push_df())
+        return analytics_cache["host_copilot_df"]
+
+    def get_indices_df():
+        if "indices_df" not in analytics_cache:
+            analytics_cache["indices_df"] = wirkung_indices(comment_df, get_impact(), get_fairness(), get_push_df(), get_risk_radar_df())
+        return analytics_cache["indices_df"]
+
+    def get_revenue_df():
+        if "revenue_df" not in analytics_cache:
+            analytics_cache["revenue_df"] = revenue_trigger_detection(comment_df, event_detail_df)
+        return analytics_cache["revenue_df"]
+
+    def get_platform_intelligence():
+        if "platform_intelligence" not in analytics_cache:
+            analytics_cache["platform_intelligence"] = platform_intelligence()
+        return analytics_cache["platform_intelligence"]
+
+    def get_phase_label():
+        if "phase_label" not in analytics_cache:
+            analytics_cache["phase_label"] = phase_of_live(comment_df)
+        return analytics_cache["phase_label"]
+
+    summary = get_summary()
+    viewer_state = get_viewer_state()
+    api_visible_now = get_api_visible_now()
     report_text = board.get("report_text", "") if board else ""
 
     if not board_id:
         st.info("Erstelle links einen neuen Analyse-Raum oder öffne eine vorhandene Board-ID.")
         st.stop()
 
-    maybe_run_auto_ai(comment_df, scores_df, clusters_df, impact, report_text, event_detail_df)
+    if ai_enabled() and st.session_state.get("ai_mode", "Manuell") != "Manuell":
+        maybe_run_auto_ai(comment_df, get_scores_df(), get_clusters_df(), get_impact(), report_text, event_detail_df)
 
     host = board["host_username"] if board else None
     started_at = board["started_at"] if board else None
@@ -5789,8 +6227,6 @@ def main():
     else:
         meta4.info("Zuschauer: -")
 
-    explain_mode = bool(st.session_state.get("impact_explain_mode", False))
-
     selected_main_tab = st.radio(
         "Hauptansicht",
         valid_main_tabs,
@@ -5801,9 +6237,34 @@ def main():
     st.session_state["main_tab"] = selected_main_tab
     st.query_params["tab"] = selected_main_tab
     st.session_state["last_query_tab"] = selected_main_tab
-    influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
+    explain_mode = bool(st.session_state.get("impact_explain_mode", False))
+    influence_lookup = {}
+    if selected_main_tab in {"Live-Monitor", "👥 Community", "User-Insights", "🎁 Events & Support", "Diskurs-Analyse", "Export & KI"}:
+        influence_df = get_influence_df()
+        influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
 
     if selected_main_tab == "Lagebild":
+        impact = get_impact()
+        impact_explanations = get_impact_explanations()
+        live_ampel = get_live_ampel()
+        alerts = get_alerts()
+        critical_df = get_critical_df()
+        viewer_df = get_viewer_df()
+        audience_df = get_audience_df()
+        hold_df, hold_summary = get_hold_metrics()
+        recovery_df, recovery_summary = get_recovery_metrics()
+        escalation_momentum = get_escalation_momentum()
+        risk_radar_df = get_risk_radar_df()
+        indices_df = get_indices_df()
+        host_copilot_df = get_host_copilot_df()
+        mention_df = get_mention_df()
+        influencer_df = get_influencer_df()
+        attention_df = get_attention_df()
+        event_metrics = get_event_metrics()
+        event_timeline_df = get_event_timeline_df()
+        funnel_df = get_funnel_df()
+        correlation_df = get_correlation_df()
+        narrative_timeline_df = get_narrative_timeline_df()
         st.subheader("Operatives Lagebild")
         o1, o2 = st.columns([1.1, 1])
         with o1:
@@ -5934,6 +6395,23 @@ def main():
             render_activation_funnel(funnel_df, height=240)
 
     if selected_main_tab == "Live-Monitor":
+        live_ampel = get_live_ampel()
+        alerts = get_alerts()
+        impact = get_impact()
+        if explain_mode:
+            impact_explanations = get_impact_explanations()
+        current_visible_accounts_df = get_current_visible_accounts_df()
+        presence_summary_df = get_presence_summary_df()
+        audience_df = get_audience_df()
+        joiners_df = get_joiners_df()
+        repeat_df_global = get_repeat_df_global()
+        phase_label = get_phase_label()
+        viewer_df = get_viewer_df()
+        api_visible_df = get_api_visible_df()
+        scores_df = get_scores_df()
+        support_df = get_support_df()
+        influencer_df = get_influencer_df()
+        influence_df = get_influence_df()
         left, right = st.columns([1.45, 0.95], gap="large")
         with left:
             st.subheader("Live-Feed")
@@ -6201,6 +6679,20 @@ def main():
             st.markdown('</div>', unsafe_allow_html=True)
 
     if selected_main_tab == "👥 Community":
+        scores_df = get_scores_df()
+        repeat_df_global = get_repeat_df_global()
+        roles = get_roles()
+        mention_df = get_mention_df()
+        influencer_df = get_influencer_df()
+        greeting_df = get_greeting_df()
+        fairness = get_fairness()
+        attention_df = get_attention_df()
+        support_df = get_support_df()
+        presence_summary_df = get_presence_summary_df()
+        dialog_df, dialog_summary = get_dialog_metrics()
+        returner_df, returner_summary = get_returner_metrics()
+        power_df = get_power_df()
+        communities_df = get_communities_df()
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Aktivste User")
@@ -6355,6 +6847,11 @@ def main():
                 display_table(recent_df if not recent_df.empty else pd.DataFrame(columns=["timestamp", "text"]), height=220)
 
     if selected_main_tab == "User-Insights":
+        scores_df = get_scores_df()
+        support_df = get_support_df()
+        influencer_df = get_influencer_df()
+        influence_df = get_influence_df()
+        presence_summary_df = get_presence_summary_df()
         st.subheader("User-Insights")
         st.caption("Detailansicht für sichtbare Accounts aus Kommentaren und Live-Events. Vollständig stille Zuschauer sind über TikTokLive nicht zuverlässig als Userliste verfügbar.")
         with st.expander("Was diese Ansicht kann", expanded=False):
@@ -6431,6 +6928,19 @@ def main():
                     )
 
     if selected_main_tab == "🎁 Events & Support":
+        event_metrics = get_event_metrics()
+        viewer_df = get_viewer_df()
+        funnel_df = get_funnel_df()
+        support_df = get_support_df()
+        gift_users_df = get_gift_users_df()
+        gift_types_df = get_gift_types_df()
+        conversion_flow_df = get_conversion_flow_df()
+        supporter_lifecycle_df = get_supporter_lifecycle_df()
+        topic_gift_df, topic_gift_summary = get_topic_gift_metrics()
+        revenue_df = get_revenue_df()
+        event_timeline_df = get_event_timeline_df()
+        correlation_df = get_correlation_df()
+        correlation_engine_df = get_correlation_engine_df()
         st.subheader("Live-Events & Monetarisierung")
         st.caption("Dieser Bereich nutzt strukturierte TikTokLive-Events. Neue Mitschnitte speichern Gifts, Likes, Shares, Joins und verfügbare User-Metadaten detaillierter.")
         with st.expander("Begriffe in diesem Bereich", expanded=False):
@@ -6560,6 +7070,30 @@ def main():
                     st.info("Noch keine belastbaren Lag-Muster erkannt.")
 
     if selected_main_tab == "Diskurs-Analyse":
+        event_df = get_event_df()
+        clusters_df = get_clusters_df()
+        drift_df = get_drift_df()
+        narrative_timeline_df = get_narrative_timeline_df()
+        trigger_df = get_trigger_df()
+        archetype_df = get_archetype_df()
+        critical_df = get_critical_df()
+        critical_brief_df = get_critical_brief_df()
+        recovery_df, recovery_summary = get_recovery_metrics()
+        escalation_momentum = get_escalation_momentum()
+        fairness = get_fairness()
+        attention_df = get_attention_df()
+        correlation_df = get_correlation_df()
+        risk_radar_df = get_risk_radar_df()
+        hold_df, hold_summary = get_hold_metrics()
+        dialog_df, dialog_summary = get_dialog_metrics()
+        correlation_engine_df = get_correlation_engine_df()
+        graph2_nodes_df, graph2_edges_df = get_graph2()
+        power_df = get_power_df()
+        communities_df = get_communities_df()
+        returner_df, returner_summary = get_returner_metrics()
+        narrative_half_life_df, narrative_half_life_summary = get_narrative_half_life_metrics()
+        push_df = get_push_df()
+        cross_live_df, creator_benchmark_df, global_narratives_df = get_platform_intelligence()
         upper_left, upper_right = st.columns(2)
         with upper_left:
             st.subheader("Top-Wörter")
@@ -6781,6 +7315,23 @@ def main():
                 st.info("Noch keine Alerts im aktuellen Datenstand.")
 
     if selected_main_tab == "Export & KI":
+        live_ampel = get_live_ampel()
+        scores_df = get_scores_df()
+        clusters_df = get_clusters_df()
+        impact = get_impact()
+        critical_df = get_critical_df()
+        viewer_df = get_viewer_df()
+        presence_df = get_presence_df()
+        presence_summary_df = get_presence_summary_df()
+        risk_radar_df = get_risk_radar_df()
+        correlation_df = get_correlation_df()
+        correlation_engine_df = get_correlation_engine_df()
+        support_df = get_support_df()
+        influence_df = get_influence_df()
+        narrative_timeline_df = get_narrative_timeline_df()
+        power_df = get_power_df()
+        indices_df = get_indices_df()
+        revenue_df = get_revenue_df()
         st.subheader("Gemeinsamer Report")
         if report_text:
             render_text_box(report_text)
