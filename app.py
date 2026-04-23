@@ -3808,12 +3808,7 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
 
 def open_user_insights_view(board_id: str, username: str) -> None:
     st.session_state["selected_user_profile"] = str(username)
-    st.session_state["main_tab"] = "User-Insights"
-    st.session_state["main_tab_selector"] = "User-Insights"
-    st.session_state["pending_main_tab"] = "User-Insights"
-    st.query_params["board"] = str(board_id)
-    st.query_params["user"] = str(username)
-    st.query_params["tab"] = "User-Insights"
+    st.session_state["show_live_user_detail"] = True
     st.rerun()
 
 
@@ -4561,6 +4556,7 @@ def init_state():
         "ai_error": "",
         "ai_max_output_tokens": AI_DEFAULT_MAX_OUTPUT_TOKENS,
         "selected_user_profile": "",
+        "show_live_user_detail": False,
         "live_username_input": "",
         "main_tab": "Lagebild",
         "main_tab_selector": "Lagebild",
@@ -5031,6 +5027,17 @@ def main():
         with left:
             st.subheader("Live-Feed")
             st.caption("Diese Filter verändern nur deinen Feed. Der gemeinsame Analyse-Raum und die Auswertungen bleiben unverändert.")
+            if st.session_state.get("show_live_user_detail") and st.session_state.get("selected_user_profile"):
+                detail_user = str(st.session_state.get("selected_user_profile"))
+                detail_top_left, detail_top_right = st.columns([0.88, 0.12])
+                with detail_top_left:
+                    st.markdown(f"**Detailansicht: {detail_user}**")
+                with detail_top_right:
+                    if st.button("Schließen", key="close_live_user_detail", use_container_width=True):
+                        st.session_state["show_live_user_detail"] = False
+                        st.rerun()
+                render_user_profile_detail(detail_user, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=False)
+                st.divider()
             f1, f2, f3 = st.columns([1.2, 0.9, 0.9])
             with f1:
                 st.text_input("Suchbegriff", placeholder="z. B. Merz", key="feed_search_text")
@@ -5179,31 +5186,32 @@ def main():
                 )
 
             st.subheader("Joins & Zuschauer", help=GLOSSARY["Viewer Count"])
+            visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=40)
             if viewer_state["viewer_count"] is not None:
                 st.metric("Aktuelle Zuschauerzahl", viewer_state["viewer_count"])
                 if viewer_state.get("total_viewer_count"):
                     st.caption(f"Gesamt-Zuschauer im Eventstrom: {viewer_state['total_viewer_count']}")
-                visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=40)
-                if not visible_accounts_df.empty:
-                    with st.popover(f"Sichtbare Accounts ({len(visible_accounts_df)})"):
-                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
-                        for _, user_row in visible_accounts_df.iterrows():
-                            u_cols = st.columns([0.2, 0.8])
-                            with u_cols[0]:
-                                render_avatar(str(user_row["username"]), user_row.get("avatar_url"), size=28)
-                            with u_cols[1]:
-                                if st.button(
-                                    str(user_row["username"]),
-                                    key=f"viewer_visible_user_{user_row.name}",
-                                    help=f"Zuletzt sichtbar über: {user_row.get('source', '-')}",
-                                ):
-                                    open_user_insights_view(board_id, str(user_row["username"]))
-                                st.caption(f"{user_row.get('source', '-')} · {user_row.get('last_seen', '-')}")
-                else:
-                    st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
+            if not visible_accounts_df.empty:
+                with st.expander(f"Sichtbare Accounts im Live ({len(visible_accounts_df)})", expanded=False):
+                    st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
+                    for _, user_row in visible_accounts_df.iterrows():
+                        u_cols = st.columns([0.2, 0.8])
+                        with u_cols[0]:
+                            render_avatar(str(user_row["username"]), user_row.get("avatar_url"), size=28)
+                        with u_cols[1]:
+                            if st.button(
+                                str(user_row["username"]),
+                                key=f"viewer_visible_user_{user_row.name}",
+                                help=f"Zuletzt sichtbar über: {user_row.get('source', '-')}",
+                            ):
+                                open_user_insights_view(board_id, str(user_row["username"]))
+                            st.caption(f"{user_row.get('source', '-')} · {user_row.get('last_seen', '-')}")
+            else:
+                st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             render_audience_timeline(viewer_df, height=220)
+            st.caption("Die grüne Linie zeigt sichtbar aktive Accounts im Zeitverlauf. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl, falls RoomUserSeqEvent verfügbar ist.")
             if not joiners_df.empty:
                 st.caption("Neue sichtbare Beitritte")
                 for _, join_row in joiners_df.head(5).iterrows():
