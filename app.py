@@ -6267,6 +6267,7 @@ def main():
         hold_df, hold_summary = get_hold_metrics()
         recovery_df, recovery_summary = get_recovery_metrics()
         escalation_momentum = get_escalation_momentum()
+        narrative_half_life_df, narrative_half_life_summary = get_narrative_half_life_metrics()
         risk_radar_df = get_risk_radar_df()
         indices_df = get_indices_df()
         host_copilot_df = get_host_copilot_df()
