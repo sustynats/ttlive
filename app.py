@@ -4492,6 +4492,7 @@ def init_state():
         "ai_error": "",
         "ai_max_output_tokens": AI_DEFAULT_MAX_OUTPUT_TOKENS,
         "selected_user_profile": "",
+        "main_tab": "Lagebild",
         "auto_refresh_enabled": False,
         "auto_refresh_toggle": False,
     }
@@ -4511,14 +4512,28 @@ def main():
     qp = st.query_params
     query_board = qp.get("board")
     query_user = qp.get("user")
+    query_tab = qp.get("tab")
     if isinstance(query_board, list):
         query_board = query_board[0] if query_board else None
     if isinstance(query_user, list):
         query_user = query_user[0] if query_user else None
+    if isinstance(query_tab, list):
+        query_tab = query_tab[0] if query_tab else None
     if query_board:
         st.session_state.board_id = query_board
     if query_user:
         st.session_state["selected_user_profile"] = str(query_user)
+    valid_main_tabs = [
+        "Lagebild",
+        "Live-Monitor",
+        "👥 Community",
+        "User-Insights",
+        "🎁 Events & Support",
+        "Diskurs-Analyse",
+        "Export & KI",
+    ]
+    if query_tab and str(query_tab) in valid_main_tabs:
+        st.session_state["main_tab"] = str(query_tab)
 
     st.markdown("""
     <style>
@@ -4819,18 +4834,17 @@ def main():
 
     explain_mode = bool(st.session_state.get("impact_explain_mode", False))
 
-    tab_overview, tab_live, tab_community, tab_user_insights, tab_events, tab_analysis, tab_export = st.tabs([
-        "Lagebild",
-        "Live-Monitor",
-        "👥 Community",
-        "User-Insights",
-        "🎁 Events & Support",
-        "Diskurs-Analyse",
-        "Export & KI",
-    ])
+    selected_main_tab = st.radio(
+        "Hauptansicht",
+        valid_main_tabs,
+        horizontal=True,
+        key="main_tab",
+        label_visibility="collapsed",
+    )
+    st.query_params["tab"] = selected_main_tab
     influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
 
-    with tab_overview:
+    if selected_main_tab == "Lagebild":
         st.subheader("Operatives Lagebild")
         o1, o2 = st.columns([1.1, 1])
         with o1:
@@ -4928,7 +4942,7 @@ def main():
         with ev_right:
             render_activation_funnel(funnel_df, height=240)
 
-    with tab_live:
+    if selected_main_tab == "Live-Monitor":
         left, right = st.columns([1.45, 0.95], gap="large")
         with left:
             st.subheader("Live-Feed")
@@ -5010,7 +5024,11 @@ def main():
                     safe_username = html.escape(str(row["username"]))
                     safe_text = html.escape(str(row["text"]))
                     ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
-                    user_href = f"?board={urllib.parse.quote(str(board_id))}&user={urllib.parse.quote(str(row['username']))}"
+                    user_href = (
+                        f"?board={urllib.parse.quote(str(board_id))}"
+                        f"&tab={urllib.parse.quote('User-Insights')}"
+                        f"&user={urllib.parse.quote(str(row['username']))}"
+                    )
                     influence_info = influence_lookup.get(str(row["username"]), {})
                     influence_score = influence_info.get("influence_score")
                     if influence_score is not None:
@@ -5132,7 +5150,7 @@ def main():
             st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    with tab_community:
+    if selected_main_tab == "👥 Community":
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Aktivste User")
@@ -5259,7 +5277,7 @@ def main():
                 recent_df = pd.DataFrame(snap["recent_messages"])
                 display_table(recent_df if not recent_df.empty else pd.DataFrame(columns=["timestamp", "text"]), height=220)
 
-    with tab_user_insights:
+    if selected_main_tab == "User-Insights":
         st.subheader("User-Insights")
         st.caption("Detailansicht für sichtbare Accounts aus Kommentaren und Live-Events. Vollständig stille Zuschauer sind über TikTokLive nicht zuverlässig als Userliste verfügbar.")
         with st.expander("Was diese Ansicht kann", expanded=False):
@@ -5335,7 +5353,7 @@ def main():
                         use_container_width=True,
                     )
 
-    with tab_events:
+    if selected_main_tab == "🎁 Events & Support":
         st.subheader("Live-Events & Monetarisierung")
         st.caption("Dieser Bereich nutzt strukturierte TikTokLive-Events. Neue Mitschnitte speichern Gifts, Likes, Shares, Joins und verfügbare User-Metadaten detaillierter.")
         with st.expander("Begriffe in diesem Bereich", expanded=False):
@@ -5452,7 +5470,7 @@ def main():
                 else:
                     st.info("Noch keine belastbaren Lag-Muster erkannt.")
 
-    with tab_analysis:
+    if selected_main_tab == "Diskurs-Analyse":
         upper_left, upper_right = st.columns(2)
         with upper_left:
             st.subheader("Top-Wörter")
@@ -5645,7 +5663,7 @@ def main():
             else:
                 st.info("Noch keine Alerts im aktuellen Datenstand.")
 
-    with tab_export:
+    if selected_main_tab == "Export & KI":
         st.subheader("Gemeinsamer Report")
         if report_text:
             render_text_box(report_text)
