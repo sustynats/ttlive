@@ -5137,7 +5137,11 @@ ALLOWED_EMAILS = ["name@example.com", "team@example.com"]
             f"Freigabe aktuell ueber {len(allowed_emails)} hinterlegte E-Mail-Adresse(n). "
             "Nur diese Konten duerfen die App oeffnen."
         )
-    st.button("Mit Google anmelden", type="primary", use_container_width=True, on_click=st.login)
+    if st.button("Mit Google anmelden", type="primary", use_container_width=True):
+        try:
+            st.login()
+        except Exception as e:
+            st.error(f"Google-Login konnte nicht gestartet werden: {e}")
     st.stop()
 
 
@@ -5158,7 +5162,11 @@ def enforce_google_auth():
             f"Das Google-Konto {email or '(ohne E-Mail im Token)'} ist nicht fuer diese App freigeschaltet."
         )
         st.caption("Bitte mit einem freigegebenen Konto neu anmelden oder die Allowlist erweitern.")
-        st.button("Mit anderem Google-Konto anmelden", use_container_width=True, on_click=st.logout)
+        if st.button("Mit anderem Google-Konto anmelden", use_container_width=True):
+            try:
+                st.logout()
+            except Exception as e:
+                st.error(f"Abmeldung fehlgeschlagen: {e}")
         st.stop()
 
     return {
@@ -5692,7 +5700,11 @@ def main():
         if auth_user:
             st.caption(f"Angemeldet als {auth_user['name']}")
             st.caption(auth_user["email"])
-            st.button("Abmelden", use_container_width=True, on_click=st.logout)
+            if st.button("Abmelden", use_container_width=True):
+                try:
+                    st.logout()
+                except Exception as e:
+                    st.error(f"Abmeldung fehlgeschlagen: {e}")
             st.divider()
         st.header("1. Analyse-Raum wählen")
         st.caption("Ein Analyse-Raum sammelt die Chatdaten eines Lives. Du kannst einen neuen Raum öffnen oder eine vorhandene Board-ID eintragen.")
