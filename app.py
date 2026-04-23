@@ -811,6 +811,199 @@ def messages_to_json_bytes(messages) -> bytes:
     return json.dumps(messages, ensure_ascii=False, indent=2).encode("utf-8")
 
 
+def html_table(df: pd.DataFrame, max_rows: int = 30) -> str:
+    if df is None or df.empty:
+        return "<p class='muted'>Keine Daten verfügbar.</p>"
+    show = df.head(max_rows).copy()
+    show.columns = [COLUMN_MAPPING.get(col, col) for col in show.columns]
+    return show.to_html(index=False, escape=True, classes="report-table", border=0)
+
+
+def chart_spec_json(chart: alt.Chart) -> str:
+    return json.dumps(chart.to_dict(), ensure_ascii=False)
+
+
+def report_chart(title: str, chart: alt.Chart, chart_id: str) -> str:
+    spec = chart_spec_json(chart)
+    return f"""
+    <section class="report-section">
+      <h2>{html.escape(title)}</h2>
+      <div id="{chart_id}" class="chart"></div>
+      <script>vegaEmbed("#{chart_id}", {spec}, {{actions: false}});</script>
+    </section>
+    """
+
+
+def build_report_html(
+    board_id: str,
+    board: dict | None,
+    summary: dict,
+    live_ampel: dict,
+    impact: dict,
+    event_metrics: dict,
+    report_text: str,
+    comment_df: pd.DataFrame,
+    scores_df: pd.DataFrame,
+    clusters_df: pd.DataFrame,
+    critical_df: pd.DataFrame,
+    viewer_df: pd.DataFrame,
+    risk_radar_df: pd.DataFrame,
+    correlation_df: pd.DataFrame,
+    support_df: pd.DataFrame,
+    influence_df: pd.DataFrame,
+) -> bytes:
+    generated_at = now_ts()
+    host = (board or {}).get("host_username") or "-"
+    status = (board or {}).get("status") or "-"
+
+    charts = []
+    if not viewer_df.empty and viewer_df["viewer_count"].max() > 0:
+        charts.append(report_chart(
+            "Viewer Dynamics",
+            alt.Chart(viewer_df).mark_line(point=True).encode(
+                x=alt.X("bucket:T", title="Zeit"),
+                y=alt.Y("viewer_count:Q", title="Zuschauerzahl"),
+                tooltip=["bucket:T", "viewer_count:Q", "viewer_delta:Q", "lurker_ratio:Q", "conversion_rate:Q"],
+            ).properties(height=260),
+            "chart_viewer",
+        ))
+    if not risk_radar_df.empty:
+        charts.append(report_chart(
+            "Live Risk Radar",
+            alt.Chart(risk_radar_df).mark_bar(cornerRadius=4).encode(
+                x=alt.X("risk_score:Q", title="Risiko-Score", scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y("dimension:N", title=None, sort="-x"),
+                color=alt.Color("risk_score:Q", scale=alt.Scale(domain=[0, 45, 100], range=["#16a34a", "#f59e0b", "#dc2626"]), legend=None),
+                tooltip=["dimension:N", "risk_score:Q", "basis:N"],
+            ).properties(height=260),
+            "chart_risk",
+        ))
+    if not critical_df.empty:
+        charts.append(report_chart(
+            "Kritische Momente",
+            alt.Chart(critical_df).mark_area(opacity=0.35, line=True, point=True).encode(
+                x=alt.X("bucket:T", title="Zeit"),
+                y=alt.Y("escalation_score:Q", title="Eskalations-Score"),
+                color=alt.Color("signal:N", title="Signal"),
+                tooltip=["bucket:T", "messages:Q", "trigger_rate:Q", "toxic_rate:Q", "escalation_score:Q"],
+            ).properties(height=260),
+            "chart_critical",
+        ))
+    if not comment_df.empty:
+        tone_df = comment_df.copy()
+        tone_df["bucket"] = tone_df["dt"].dt.floor("min")
+        heat_df = tone_df.groupby(["bucket", "tone"]).size().reset_index(name="messages")
+        charts.append(report_chart(
+            "Tonlagen-Heatmap",
+            alt.Chart(heat_df).mark_rect().encode(
+                x=alt.X("bucket:T", title="Zeit"),
+                y=alt.Y("tone:N", title="Tonlage"),
+                color=alt.Color("messages:Q", title="Nachrichten", scale=alt.Scale(scheme="inferno")),
+                tooltip=["bucket:T", "tone:N", "messages:Q"],
+            ).properties(height=230),
+            "chart_tone",
+        ))
+
+    impact_cards = "".join(
+        f"<div class='mini-card'><span>{html.escape(name)}</span><strong>{value}</strong></div>"
+        for name, value in impact.items()
+    )
+    kpis = [
+        ("Nachrichten", summary.get("messages", 0)),
+        ("User", summary.get("users", 0)),
+        ("Trigger", summary.get("trigger_msgs", 0)),
+        ("Abwertend", summary.get("toxic_msgs", 0)),
+        ("Beitritte", event_metrics.get("joins", 0)),
+        ("Likes", event_metrics.get("likes", 0)),
+        ("Shares", event_metrics.get("shares", 0)),
+        ("Gifts", event_metrics.get("gifts", 0)),
+        ("Diamonds", event_metrics.get("diamonds", 0)),
+    ]
+    kpi_html = "".join(f"<div class='kpi'><span>{html.escape(str(label))}</span><strong>{html.escape(str(value))}</strong></div>" for label, value in kpis)
+    safe_report = html.escape(report_text or "Noch kein gemeinsamer Report erstellt.").replace("\n", "<br>")
+
+    body = f"""
+    <!doctype html>
+    <html lang="de">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>TikTok Live Report {html.escape(board_id)}</title>
+      <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+      <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+      <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+      <style>
+        body {{ font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:#0f172a; margin:0; background:#f8fafc; }}
+        main {{ max-width: 1180px; margin: 0 auto; padding: 32px; }}
+        header {{ border-bottom: 3px solid #2563eb; padding-bottom: 18px; margin-bottom: 24px; }}
+        h1 {{ margin:0; font-size: 28px; }}
+        h2 {{ margin: 0 0 14px 0; font-size: 20px; }}
+        .muted {{ color:#64748b; }}
+        .grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }}
+        .kpi, .mini-card {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:14px; }}
+        .kpi span, .mini-card span {{ display:block; color:#64748b; font-size:12px; text-transform:uppercase; font-weight:700; }}
+        .kpi strong {{ display:block; font-size:26px; margin-top:6px; color:#2563eb; }}
+        .mini-card strong {{ display:block; font-size:22px; margin-top:6px; }}
+        .ampel {{ background:white; border-left:8px solid {live_ampel.get("color", "#f59e0b")}; border-radius:8px; padding:16px; margin:18px 0; }}
+        .report-section {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:18px; margin:18px 0; page-break-inside: avoid; }}
+        .report-table {{ width:100%; border-collapse:collapse; font-size:12px; }}
+        .report-table th, .report-table td {{ border-bottom:1px solid #e2e8f0; padding:7px; text-align:left; vertical-align:top; }}
+        .report-table th {{ background:#f1f5f9; }}
+        .chart {{ width:100%; }}
+        @media print {{
+          body {{ background:white; }}
+          main {{ padding: 0; max-width: none; }}
+          .report-section, .kpi, .mini-card, .ampel {{ box-shadow:none; }}
+          a {{ color:#0f172a; text-decoration:none; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <main>
+        <header>
+          <h1>TikTok Live Impact Report</h1>
+          <p class="muted">Board {html.escape(board_id)} · Host {html.escape(str(host))} · Status {html.escape(str(status))} · erzeugt {html.escape(generated_at)}</p>
+        </header>
+        <section class="report-section">
+          <h2>Kennzahlen</h2>
+          <div class="grid">{kpi_html}</div>
+          <div class="ampel">
+            <strong>Gesamtlage: {html.escape(str(live_ampel.get("score", "-")))} · {html.escape(str(live_ampel.get("label", "-")))} · {html.escape(str(live_ampel.get("ampel", "-")))}</strong>
+          </div>
+          <div class="grid">{impact_cards}</div>
+        </section>
+        <section class="report-section">
+          <h2>Gemeinsamer Report</h2>
+          <p>{safe_report}</p>
+        </section>
+        {''.join(charts)}
+        <section class="report-section">
+          <h2>Top User</h2>
+          {html_table(scores_df, 25)}
+        </section>
+        <section class="report-section">
+          <h2>Themencluster</h2>
+          {html_table(clusters_df, 20)}
+        </section>
+        <section class="report-section">
+          <h2>Korrelationssignale</h2>
+          {html_table(correlation_df, 20)}
+        </section>
+        <section class="report-section">
+          <h2>Supporter & Monetarisierung</h2>
+          {html_table(support_df, 25)}
+        </section>
+        <section class="report-section">
+          <h2>Influence Scores</h2>
+          {html_table(influence_df, 25)}
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+    return body.encode("utf-8")
+
+
 def normalize_import_message(row: dict, fallback_timestamp: str | None = None) -> dict | None:
     username = str(row.get("username") or row.get("user") or row.get("User") or "").strip()
     text = str(row.get("text") or row.get("message") or row.get("Nachricht") or "").strip()
@@ -4567,10 +4760,36 @@ def main():
                 st.error(f"Import fehlgeschlagen: {e}")
 
         st.subheader("Daten exportieren")
-        export1, export2, export3 = st.columns(3)
+        export1, export2, export3, export4 = st.columns(4)
         export1.download_button("TXT exportieren", data=messages_to_txt(all_messages), file_name=f"tiktok-live-{board_id}.txt", use_container_width=True)
         export2.download_button("CSV exportieren", data=messages_to_csv_bytes(all_messages), file_name=f"tiktok-live-{board_id}.csv", mime="text/csv", use_container_width=True)
         export3.download_button("JSON exportieren", data=messages_to_json_bytes(all_messages), file_name=f"tiktok-live-{board_id}.json", mime="application/json", use_container_width=True)
+        export4.download_button(
+            "HTML-Report",
+            data=build_report_html(
+                board_id,
+                board,
+                summary,
+                live_ampel,
+                impact,
+                event_metrics,
+                report_text,
+                comment_df,
+                scores_df,
+                clusters_df,
+                critical_df,
+                viewer_df,
+                risk_radar_df,
+                correlation_df,
+                support_df,
+                influence_df,
+            ),
+            file_name=f"tiktok-live-report-{board_id}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Öffnet als eigenständiger HTML-Report im Browser. Dort kannst du über Drucken/Sichern als PDF exportieren.",
+        )
+        st.caption("Für PDF: HTML-Report öffnen und im Browser Drucken → Als PDF sichern.")
 
         st.subheader("Datenvorschau")
         display_table(comment_df.head(100), height=320)
