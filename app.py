@@ -128,10 +128,10 @@ GLOSSARY = {
     "Zeit-Korrelation": "Näherung, ob Trigger, Gifts oder Chat-Spitzen zeitlich mit Viewer-Veränderungen zusammenfallen. Das zeigt Muster, keine bewiesene Ursache.",
     "Conversion": "Näherung, wie stark Zuschauer in sichtbare Aktionen übergehen: Kommentare, Likes, Shares, Follows oder Gifts.",
     "Geschätzt sichtbar anwesend": "Heuristische Schätzung, wie viele sichtbar gewordene Accounts aktuell noch im Live sein dürften. Grundlage sind sichtbare Aktivitäten und Session-Fortschreibung mit Leerlauf-Fenster. Das ist keine vollständige Zuschauerliste.",
-    "Sichtbare Accounts im Verlauf": "Anzahl unterschiedlicher Accounts, die irgendwann im bisherigen Mitschnitt sichtbar geworden sind, etwa über Kommentare, Joins, Likes, Shares, Follows oder Gifts.",
+    "Sichtbare Accounts im Verlauf": "Zusatzanalyse: Anzahl unterschiedlicher Accounts, die irgendwann im bisherigen Mitschnitt sichtbar geworden sind, etwa über Kommentare, Joins, Likes, Shares, Follows oder Gifts. Diese Zahl ist nicht die führende API-Basis.",
     "Geschätzte Präsenz": "Aufsummierte Dauer aller geschätzten Session-Blöcke eines sichtbaren Accounts im Mitschnitt. Wenn ein User rein, raus und später wieder rein kommt, werden die Blöcke addiert.",
     "Session-Blöcke": "Anzahl getrennter Anwesenheitsphasen eines sichtbaren Accounts. Eine neue Session beginnt, wenn zwischen zwei sichtbaren Aktivitäten länger keine Aktivität dieses Accounts erkannt wurde.",
-    "Geschätzte Reichweite seit Start": "Vorsichtige Annäherung an die kumulierte Zuschauer-Reichweite seit Start. Sie kombiniert sichtbare eindeutige Accounts mit positiven Zuschauerzuwächsen aus dem Viewer-Verlauf. Das ist keine exakte Unique-User-Zahl.",
+    "Geschätzte Reichweite seit Start": "API-basierte Näherung an die kumulierte Zuschauer-Reichweite seit Start. Sie nutzt den ersten bekannten Viewer-Stand plus spätere positive Zuschauerzuwächse aus dem TikTok-Viewer-Verlauf. Das ist keine exakte Unique-User-Zahl, aber jetzt konsequent API-basiert.",
     "Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der sichtbar kommentierend oder sichtbar anwesend erscheint. Die Quote wird auf 0 bis 100 Prozent begrenzt, weil sie eine Näherung und keine exakte Messung aller stillen Zuschauer ist.",
     "Hold Rate": "Schätzt, wie viel eines Zuschaueranstiegs nach einem Spike kurze Zeit später noch übrig ist. Hohe Werte bedeuten, dass Peaks nicht sofort wieder zusammenfallen.",
     "Recovery Time": "Geschätzte Zeit, bis sich ein kritischer Moment wieder unter eine entspanntere Eskalationsschwelle bewegt.",
@@ -898,9 +898,9 @@ def render_help_center():
     metric_rows = [
         {
             "Kennzahl": "User",
-            "Aussage": "Geschätzt sichtbar anwesende Accounts im aktuellen Stand.",
-            "So entsteht sie": "Aus sichtbaren Aktivitäten werden Session-Blöcke geschätzt. Accounts gelten noch als anwesend, solange ihre Session nicht ausgelaufen ist.",
-            "Interpretation": "Näherung für sichtbare Anwesenheit. Nicht identisch mit allen stillen Zuschauern.",
+            "Aussage": "Sichtbare Zuschauerzahl direkt aus der API.",
+            "So entsteht sie": "Die App nutzt das sichtbare Viewer-Feld aus RoomUserSeqEvent als führende User-Zahl.",
+            "Interpretation": "Das ist jetzt die primäre Basis für sichtbare User-Zahlen im Dashboard.",
         },
         {
             "Kennzahl": "Zuschauer gesamt",
@@ -910,9 +910,9 @@ def render_help_center():
         },
         {
             "Kennzahl": "Geschätzt sichtbar anwesend",
-            "Aussage": "Wie viele sichtbar gewordene Accounts wahrscheinlich noch da sind.",
+            "Aussage": "Heuristische Ergänzung: wie viele sichtbar gewordene Accounts wahrscheinlich noch da sind.",
             "So entsteht sie": "Session-Fortschreibung aus Kommentaren, Joins, Likes, Shares, Follows und Gifts.",
-            "Interpretation": "Gut für sichtbare Community-Dynamik, nicht für stille Zuschauer.",
+            "Interpretation": "Zusatzperspektive neben der API-Zahl, nicht mehr die führende sichtbare User-Basis.",
         },
         {
             "Kennzahl": "Sichtbare Accounts im Verlauf",
@@ -3629,8 +3629,8 @@ def render_viewer_dynamics(viewer_df: pd.DataFrame, height: int = 310):
     st.altair_chart((line + points).properties(height=height), use_container_width=True)
 
 
-def render_audience_timeline(viewer_df: pd.DataFrame, presence_df: pd.DataFrame | None = None, height: int = 320):
-    if (viewer_df is None or viewer_df.empty) and (presence_df is None or presence_df.empty):
+def render_audience_timeline(viewer_df: pd.DataFrame, api_visible_df: pd.DataFrame | None = None, height: int = 320):
+    if (viewer_df is None or viewer_df.empty) and (api_visible_df is None or api_visible_df.empty):
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
         return
     series_frames = []
@@ -3640,11 +3640,11 @@ def render_audience_timeline(viewer_df: pd.DataFrame, presence_df: pd.DataFrame 
             .rename(columns={"viewer_count": "count"})
             .assign(series="Zuschauer gesamt")
         )
-    if presence_df is not None and not presence_df.empty and float(presence_df["present_users"].max()) > 0:
+    if api_visible_df is not None and not api_visible_df.empty and float(api_visible_df["api_visible_count"].max()) > 0:
         series_frames.append(
-            presence_df[["bucket", "present_users"]]
-            .rename(columns={"present_users": "count"})
-            .assign(series="Geschätzt sichtbar anwesend")
+            api_visible_df[["bucket", "api_visible_count"]]
+            .rename(columns={"api_visible_count": "count"})
+            .assign(series="Sichtbare Zuschauer (API)")
         )
     if not series_frames:
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
@@ -3656,7 +3656,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, presence_df: pd.DataFrame 
         color=alt.Color(
             "series:N",
             title="Reihe",
-            scale=alt.Scale(domain=["Zuschauer gesamt", "Geschätzt sichtbar anwesend"], range=["#2563eb", "#16a34a"]),
+            scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbare Zuschauer (API)"], range=["#2563eb", "#16a34a"]),
         ),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
@@ -3728,8 +3728,8 @@ def render_reach_chart(audience_df: pd.DataFrame, height: int = 240):
         return
     long_df = pd.DataFrame()
     for col, label in [
-        ("visible_cumulative", "Sichtbare Accounts kumuliert"),
-        ("estimated_total_reach", "Geschätzte Reichweite seit Start"),
+        ("estimated_total_reach", "API-Reichweite seit Start"),
+        ("visible_cumulative", "Sichtbare Accounts im Verlauf"),
     ]:
         if col not in audience_df.columns:
             continue
@@ -4189,6 +4189,26 @@ def latest_viewer_count(event_df: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data(ttl=8, show_spinner=False)
+def api_visible_viewer_timeline(event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
+    columns = ["bucket", "api_visible_count"]
+    if event_df is None or event_df.empty or event_df["dt"].isna().all():
+        return pd.DataFrame(columns=columns)
+    df = event_df[event_df["event_type"] == "viewer_update"].copy()
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    df["bucket"] = df["dt"].dt.floor(bucket)
+    out = (
+        df.groupby("bucket")["viewer_count"]
+        .max()
+        .reset_index()
+        .rename(columns={"viewer_count": "api_visible_count"})
+        .sort_values("bucket")
+        .reset_index(drop=True)
+    )
+    return out
+
+
 def recent_joiners(event_df: pd.DataFrame, limit: int = 8) -> pd.DataFrame:
     if event_df is None or event_df.empty:
         return pd.DataFrame(columns=["timestamp", "username", "avatar_url"])
@@ -4414,12 +4434,7 @@ def audience_approximation_frame(
     out["visible_cumulative"] = out["visible_cumulative"].fillna(0).cummax()
     baseline_viewers = float(out.loc[out["viewer_count"] > 0, "viewer_count"].iloc[0]) if (out["viewer_count"] > 0).any() else 0.0
     viewer_growth = out["viewer_count"].diff().fillna(out["viewer_count"]).clip(lower=0).cumsum()
-    out["estimated_total_reach"] = pd.Series(
-        [
-            max(float(vis), baseline_viewers + float(growth))
-            for vis, growth in zip(out["visible_cumulative"], viewer_growth)
-        ]
-    )
+    out["estimated_total_reach"] = (baseline_viewers + viewer_growth).clip(lower=0)
     out["visible_activity_rate"] = (
         out["visible_present"] / out["viewer_count"].clip(lower=1)
     ).clip(lower=0, upper=1)
@@ -5682,6 +5697,7 @@ def main():
     event_metrics = live_event_metrics(event_detail_df)
     event_timeline_df = event_timeline(event_detail_df)
     viewer_df = viewer_dynamics(comment_df, event_detail_df)
+    api_visible_df = api_visible_viewer_timeline(event_detail_df)
     presence_df = visible_presence_timeline(comment_df, event_detail_df)
     commenter_presence_df = visible_presence_timeline(comment_df, pd.DataFrame())
     presence_summary_df = visible_presence_summary(comment_df, event_detail_df)
@@ -5700,6 +5716,7 @@ def main():
     support_df = supporter_matrix(comment_df, event_detail_df)
     supporter_lifecycle_df = supporter_lifecycle(support_df)
     viewer_state = latest_viewer_count(event_detail_df)
+    api_visible_now = safe_int(viewer_state.get("raw_viewer_count"), 0) if viewer_state else 0
     joiners_df = recent_joiners(event_detail_df)
     repeat_df_global = repeated_messages(comment_df, min_count=2)
     live_ampel = compute_live_ampel(comment_df, scores_df, impact)
@@ -5745,8 +5762,8 @@ def main():
     with k1:
         render_kpi_card("Nachrichten", summary["messages"], "Chatvolumen", "#2563eb")
     with k2:
-        visible_now = len(current_visible_accounts_df) if not current_visible_accounts_df.empty else summary["users"]
-        render_kpi_card("User", visible_now, "geschätzt sichtbar anwesend", "#16a34a")
+        visible_now = api_visible_now or len(current_visible_accounts_df) or summary["users"]
+        render_kpi_card("User", visible_now, "sichtbare Zuschauer via API", "#16a34a")
     with k3:
         render_kpi_card("Fragen", summary["questions"], "Frage-Druck", "#0ea5e9", GLOSSARY["Fragequote"])
     with k4:
@@ -5838,16 +5855,16 @@ def main():
                 st.info("Noch keine Alert-Signale.")
 
         st.subheader("Zuschauer- und User-Verlauf")
-        render_audience_timeline(viewer_df, presence_df, height=290)
-        est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else len(presence_summary_df)
+        render_audience_timeline(viewer_df, api_visible_df, height=290)
+        est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else 0
         visible_cumulative = int(audience_df["visible_cumulative"].max()) if not audience_df.empty else len(presence_summary_df)
         activity_rate_now = float(audience_df["comment_activity_rate"].iloc[-1]) if not audience_df.empty else 0.0
         kpi_a, kpi_b, kpi_c, kpi_d = st.columns(4)
-        kpi_a.metric("Geschätzt sichtbar anwesend", len(current_visible_accounts_df))
-        kpi_b.metric("Sichtbare Accounts im Verlauf", visible_cumulative)
-        kpi_c.metric("Geschätzte Reichweite seit Start", est_total_reach)
+        kpi_a.metric("Sichtbare Zuschauer (API)", api_visible_now or 0)
+        kpi_b.metric("API-Reichweite seit Start", est_total_reach)
+        kpi_c.metric("Sichtbare Accounts im Verlauf", visible_cumulative)
         kpi_d.metric("Kommentar-Aktivitätsquote", f"{activity_rate_now*100:.1f}%")
-        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie schätzt, wie viele sichtbar gewordene Accounts zu diesem Zeitpunkt noch anwesend sind. Grundlage sind sichtbare Aktivitäten mit Session-Fortschreibung.")
+        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Die Reichweiten-KPI darüber ist ebenfalls API-basiert; heuristische Account-Analysen stehen separat daneben.")
         reach_left, reach_right = st.columns(2)
         with reach_left:
             st.subheader("Kumulierte Reichweite")
@@ -6092,24 +6109,26 @@ def main():
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
             if not total_visible_accounts_df.empty:
-                est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else len(total_visible_accounts_df)
+                est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else 0
                 visible_comment_rate = float(audience_df["comment_activity_rate"].iloc[-1]) if not audience_df.empty else 0.0
                 st.caption(
-                    f"Geschätzt aktuell sichtbar anwesend: {len(current_visible_accounts_df)} Accounts. "
+                    f"Sichtbare Zuschauer laut API aktuell: {api_visible_now or 0}. "
+                    f"Geschätzt aktuell anwesende sichtbare Accounts: {len(current_visible_accounts_df)}. "
                     f"Insgesamt sichtbar im bisherigen Verlauf: {len(total_visible_accounts_df)} Accounts. "
-                    f"Geschätzte Reichweite seit Start: {est_total_reach}. "
+                    f"API-Reichweite seit Start: {est_total_reach}. "
                     f"Kommentar-Aktivitätsquote aktuell: {visible_comment_rate*100:.1f}%."
                 )
             if not visible_accounts_df.empty:
-                expander_label = f"Geschätzt aktuell anwesende sichtbare Accounts ({len(current_visible_accounts_df)})"
+                expander_label = f"Sichtbare Accountsliste ({api_visible_now or len(current_visible_accounts_df)})"
                 with st.expander(expander_label, expanded=False):
                     if len(current_visible_accounts_df) > 40:
                         st.caption(
-                            f"TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. "
-                            f"Hier siehst du die 40 zuletzt geschätzt anwesenden sichtbaren Accounts von insgesamt {len(current_visible_accounts_df)} aktuell geschätzten sichtbaren Accounts."
+                            f"Die Anzahl im Label kommt aus der API. "
+                            f"Die Namensliste bleibt eine heuristische Auswahl sichtbarer Accounts, weil TikTokLive keine vollständige momentane Userliste aller Zuschauer liefert. "
+                            f"Hier siehst du die 40 zuletzt passend sichtbaren Accounts."
                         )
                     else:
-                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die aktuell geschätzt anwesenden sichtbaren Accounts aus Kommentaren und Live-Events.")
+                        st.caption("Die Anzahl im Label kommt aus der API. Die Namensliste darunter ist eine heuristische Auswahl sichtbarer Accounts aus Kommentaren und Live-Events, nicht die vollständige TikTok-Zuschauerliste.")
                     for _, user_row in visible_accounts_df.iterrows():
                         u_cols = st.columns([0.2, 0.8])
                         with u_cols[0]:
@@ -6127,8 +6146,8 @@ def main():
                             )
             else:
                 st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
-            render_audience_timeline(viewer_df, presence_df, height=220)
-            st.caption("Die grüne Linie zeigt geschätzt aktuell anwesende sichtbare Accounts. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl. Wenn TikTok zwei Viewer-Felder liefert, bevorzugt die App die größere Gesamtzahl.")
+            render_audience_timeline(viewer_df, api_visible_df, height=220)
+            st.caption("Die grüne Linie zeigt die sichtbare Zuschauerzahl direkt aus der API. Die blaue Linie zeigt die von TikTok gemeldete Gesamt-Zuschauerzahl. Heuristische Anwesenheitslisten stehen separat darunter.")
             with st.expander("Reichweite & Aktivitätsquote", expanded=False):
                 r1, r2 = st.columns(2)
                 with r1:
