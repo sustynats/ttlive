@@ -6262,6 +6262,7 @@ def main():
         alerts = get_alerts()
         critical_df = get_critical_df()
         viewer_df = get_viewer_df()
+        api_visible_df = get_api_visible_df()
         audience_df = get_audience_df()
         hold_df, hold_summary = get_hold_metrics()
         recovery_df, recovery_summary = get_recovery_metrics()
