@@ -321,7 +321,7 @@ def now_ts() -> str:
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -329,6 +329,9 @@ def get_conn():
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA temp_store=MEMORY")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS boards (
             board_id TEXT PRIMARY KEY,
@@ -359,6 +362,16 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_id_id ON messages(board_id, id)")
     conn.commit()
     conn.close()
+
+
+def latest_message_id(board_id: str) -> int:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS max_id FROM messages WHERE board_id = ?",
+        (board_id,),
+    ).fetchone()
+    conn.close()
+    return int(row["max_id"]) if row else 0
 
 
 def create_board() -> str:
@@ -417,7 +430,8 @@ def insert_message(board_id: str, payload: dict):
     conn.close()
 
 
-def load_messages(board_id: str):
+@st.cache_data(ttl=2, show_spinner=False)
+def _load_messages_cached(board_id: str, max_id: int):
     conn = get_conn()
     rows = conn.execute(
         """
@@ -442,6 +456,10 @@ def load_messages(board_id: str):
             item["metadata"] = {}
         messages.append(item)
     return messages
+
+
+def load_messages(board_id: str):
+    return _load_messages_cached(board_id, latest_message_id(board_id))
 
 
 def normalize_username(username: str) -> str:
@@ -1426,6 +1444,7 @@ def get_comment_messages(messages):
     return [m for m in messages if isinstance(m, dict) and m.get("type") == "comment"]
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def summarize_heuristics(comment_df: pd.DataFrame) -> dict:
     if comment_df.empty:
         return {
@@ -1460,6 +1479,7 @@ def top_emojis(comment_df: pd.DataFrame, n: int = 12) -> pd.DataFrame:
     return pd.DataFrame([{"emoji": k, "count": v} for k, v in counter.most_common(n)])
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def top_users(comment_df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["username", "messages"])
@@ -1472,6 +1492,7 @@ def top_users(comment_df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def activity_per_minute(comment_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["minute", "messages"])
@@ -1847,6 +1868,7 @@ def event_overview(messages) -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def live_event_metrics(event_df: pd.DataFrame) -> dict:
     if event_df.empty:
         return {
@@ -1867,6 +1889,7 @@ def live_event_metrics(event_df: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def event_timeline(event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
     if event_df.empty or event_df["dt"].isna().all():
         return pd.DataFrame(columns=["bucket", "event_type", "events", "value"])
@@ -1896,6 +1919,7 @@ def event_timeline(event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame
     return pd.DataFrame(rows).sort_values("bucket")
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def viewer_dynamics(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
     columns = [
         "bucket", "viewer_count", "viewer_delta", "comments", "active_users", "trigger_rate",
@@ -1967,6 +1991,7 @@ def viewer_dynamics(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: st
     return out[columns]
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def temporal_correlation_signals(viewer_df: pd.DataFrame) -> pd.DataFrame:
     columns = ["bucket", "correlation_signal", "risk_score", "viewer_delta", "comments", "trigger_rate", "gifts", "diamonds", "interpretation"]
     if viewer_df is None or viewer_df.empty:
@@ -2035,6 +2060,7 @@ def temporal_correlation_signals(viewer_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["risk_score", "bucket"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def live_risk_radar(comment_df: pd.DataFrame, scores_df: pd.DataFrame, impact: dict, viewer_df: pd.DataFrame, support_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df is None or comment_df.empty:
         return pd.DataFrame(columns=["dimension", "risk_score", "basis"])
@@ -2082,6 +2108,7 @@ def live_risk_radar(comment_df: pd.DataFrame, scores_df: pd.DataFrame, impact: d
     return pd.DataFrame(rows).sort_values("risk_score", ascending=False).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def gift_leaderboard(event_df: pd.DataFrame) -> pd.DataFrame:
     if event_df.empty:
         return pd.DataFrame(columns=["username", "gifts", "diamond_value", "gift_types", "top_gift"])
@@ -2101,6 +2128,7 @@ def gift_leaderboard(event_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["diamond_value", "gifts"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def gift_type_matrix(event_df: pd.DataFrame) -> pd.DataFrame:
     if event_df.empty:
         return pd.DataFrame(columns=["gift_name", "gifts", "diamond_value", "senders"])
@@ -2121,6 +2149,7 @@ def gift_type_matrix(event_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def activation_funnel(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
     users = set(comment_df["username"].dropna().astype(str).tolist()) if not comment_df.empty else set()
     if not event_df.empty:
@@ -2146,6 +2175,7 @@ def activation_funnel(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Da
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def supporter_matrix(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
     users = set(comment_df["username"].dropna().astype(str).tolist()) if not comment_df.empty else set()
     if not event_df.empty:
@@ -2202,6 +2232,7 @@ def _timedelta_seconds(freq: str) -> int:
         return 60
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def event_correlation_engine(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "window", "relation", "lag_seconds", "correlation", "probability",
@@ -2272,6 +2303,7 @@ def event_correlation_engine(comment_df: pd.DataFrame, event_df: pd.DataFrame) -
     return pd.DataFrame(rows).sort_values(["probability", "correlation"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def critical_moment_brief(critical_df: pd.DataFrame, viewer_df: pd.DataFrame | None = None) -> pd.DataFrame:
     columns = ["bucket", "headline", "severity", "escalation_score", "viewer_delta", "detail"]
     if critical_df is None or critical_df.empty:
@@ -2351,6 +2383,7 @@ def narrative_label_from_words(words: list[str]) -> str:
     return ", ".join(words[:3])
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def live_narrative_timeline(comment_df: pd.DataFrame, bucket: str = "2min") -> pd.DataFrame:
     columns = ["bucket", "label", "top_words", "messages", "trigger_rate", "toxic_rate", "shift"]
     if comment_df.empty or comment_df["dt"].isna().all():
@@ -2381,6 +2414,7 @@ def live_narrative_timeline(comment_df: pd.DataFrame, bucket: str = "2min") -> p
     return pd.DataFrame(rows).sort_values("bucket").reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def viewer_conversion_flow(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
     funnel_df = activation_funnel(comment_df, event_df)
     if funnel_df.empty:
@@ -2406,6 +2440,7 @@ def viewer_conversion_flow(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> 
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def influencer_graph_2(comment_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     edge_columns = ["source", "target", "count", "response_hits", "response_rate", "edge_power"]
     node_columns = ["username", "weighted_out", "weighted_in", "hubs", "authority", "edge_power"]
@@ -2471,6 +2506,7 @@ def influencer_graph_2(comment_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
     return node_df, edge_df
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def community_detection(comment_df: pd.DataFrame, edges_df: pd.DataFrame) -> pd.DataFrame:
     columns = ["community_id", "members", "member_count", "messages", "dominant_narrative"]
     if comment_df.empty or edges_df.empty:
@@ -2514,6 +2550,7 @@ def community_detection(comment_df: pd.DataFrame, edges_df: pd.DataFrame) -> pd.
     return pd.DataFrame(communities).sort_values(["member_count", "messages"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def narrative_push_detection(comment_df: pd.DataFrame, bucket: str = "30s") -> pd.DataFrame:
     columns = ["bucket", "keyword", "users", "messages", "coordination_score", "accounts"]
     if comment_df.empty or comment_df["dt"].isna().all():
@@ -2548,6 +2585,7 @@ def narrative_push_detection(comment_df: pd.DataFrame, bucket: str = "30s") -> p
     return pd.DataFrame(rows).sort_values(["coordination_score", "bucket"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def power_index(comment_df: pd.DataFrame, scores_df: pd.DataFrame, influencer_df: pd.DataFrame, support_df: pd.DataFrame, influence_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["username", "power_index", "attention_share", "network_power", "support_score", "influence_score", "role"])
@@ -2572,6 +2610,7 @@ def power_index(comment_df: pd.DataFrame, scores_df: pd.DataFrame, influencer_df
     return base.sort_values("power_index", ascending=False).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def host_copilot_suggestions(comment_df: pd.DataFrame, correlation_df: pd.DataFrame, risk_df: pd.DataFrame, push_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     if comment_df.empty:
@@ -2839,6 +2878,7 @@ def topic_to_gift_metrics(narrative_df: pd.DataFrame, event_df: pd.DataFrame, bu
     return out[columns], {"top_topic": top.get("label", "-") if len(out) else "-", "top_score": top.get("topic_to_gift_score", 0.0) if len(out) else 0.0}
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def wirkung_indices(comment_df: pd.DataFrame, impact: dict, fairness: dict, push_df: pd.DataFrame, risk_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["index", "score", "basis"])
@@ -2860,6 +2900,7 @@ def wirkung_indices(comment_df: pd.DataFrame, impact: dict, fairness: dict, push
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def revenue_trigger_detection(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
     columns = ["bucket", "diamonds", "gifts", "trigger_rate", "top_words", "revenue_signal"]
     if comment_df.empty or event_df.empty:
@@ -2894,6 +2935,7 @@ def revenue_trigger_detection(comment_df: pd.DataFrame, event_df: pd.DataFrame, 
     return pd.DataFrame(rows).sort_values(["revenue_signal", "bucket"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def supporter_lifecycle(support_df: pd.DataFrame) -> pd.DataFrame:
     if support_df.empty:
         return pd.DataFrame(columns=["username", "lifecycle", "support_score", "diamonds", "gifts", "shares"])
@@ -2992,6 +3034,7 @@ def engagement_matrix_long(support_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
 def influence_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, influencer_df: pd.DataFrame, support_df: pd.DataFrame) -> pd.DataFrame:
     users = set()
     if comment_df is not None and not comment_df.empty:
@@ -5860,7 +5903,7 @@ def main():
             disabled=not board_id,
             help="Erstellt aus den bisherigen Chatdaten einen regelbasierten Bericht und speichert ihn im Analyse-Raum.",
         ):
-            tmp_comment_df = build_dataframe(get_comment_messages(load_messages(board_id) if board_id else []))
+            tmp_comment_df = comment_df.copy()
             tmp_scores_df = user_scores(tmp_comment_df)
             tmp_clusters_df = build_clusters(tmp_comment_df, max_clusters=8)
             tmp_impact = impact_scores(tmp_comment_df, tmp_scores_df, tmp_clusters_df)
