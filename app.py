@@ -4493,6 +4493,7 @@ def init_state():
         "ai_max_output_tokens": AI_DEFAULT_MAX_OUTPUT_TOKENS,
         "selected_user_profile": "",
         "main_tab": "Lagebild",
+        "last_query_tab": None,
         "auto_refresh_enabled": False,
         "auto_refresh_toggle": False,
     }
@@ -4532,8 +4533,9 @@ def main():
         "Diskurs-Analyse",
         "Export & KI",
     ]
-    if query_tab and str(query_tab) in valid_main_tabs:
+    if query_tab and str(query_tab) in valid_main_tabs and str(query_tab) != st.session_state.get("last_query_tab"):
         st.session_state["main_tab"] = str(query_tab)
+        st.session_state["last_query_tab"] = str(query_tab)
 
     st.markdown("""
     <style>
@@ -4842,6 +4844,7 @@ def main():
         label_visibility="collapsed",
     )
     st.query_params["tab"] = selected_main_tab
+    st.session_state["last_query_tab"] = selected_main_tab
     influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
 
     if selected_main_tab == "Lagebild":
