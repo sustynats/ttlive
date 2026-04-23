@@ -4510,6 +4510,7 @@ def init_state():
         "selected_user_profile": "",
         "live_username_input": "",
         "main_tab": "Lagebild",
+        "main_tab_selector": "Lagebild",
         "pending_main_tab": None,
         "last_query_tab": None,
         "auto_refresh_enabled": False,
@@ -4553,10 +4554,12 @@ def main():
     ]
     if query_tab and str(query_tab) in valid_main_tabs and str(query_tab) != st.session_state.get("last_query_tab"):
         st.session_state["main_tab"] = str(query_tab)
+        st.session_state["main_tab_selector"] = str(query_tab)
         st.session_state["last_query_tab"] = str(query_tab)
     pending_tab = st.session_state.get("pending_main_tab")
     if pending_tab and str(pending_tab) in valid_main_tabs:
         st.session_state["main_tab"] = str(pending_tab)
+        st.session_state["main_tab_selector"] = str(pending_tab)
         st.session_state["pending_main_tab"] = None
 
     st.markdown("""
@@ -4864,9 +4867,10 @@ def main():
         "Hauptansicht",
         valid_main_tabs,
         horizontal=True,
-        key="main_tab",
+        key="main_tab_selector",
         label_visibility="collapsed",
     )
+    st.session_state["main_tab"] = selected_main_tab
     st.query_params["tab"] = selected_main_tab
     st.session_state["last_query_tab"] = selected_main_tab
     influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
