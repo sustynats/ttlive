@@ -7328,6 +7328,7 @@ def main():
 
     if selected_main_tab == "Export & KI":
         live_ampel = get_live_ampel()
+        event_metrics = get_event_metrics()
         scores_df = get_scores_df()
         clusters_df = get_clusters_df()
         impact = get_impact()
