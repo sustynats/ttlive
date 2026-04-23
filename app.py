@@ -4670,7 +4670,6 @@ def main():
                 if not board_id:
                     raise ValueError("Bitte zuerst einen Analyse-Raum erstellen oder öffnen.")
                 username = normalize_username(username_input)
-                st.session_state["live_username_input"] = username
                 board = get_board(board_id)
                 if not board:
                     raise ValueError("Analyse-Raum nicht gefunden.")
