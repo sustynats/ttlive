@@ -6212,7 +6212,7 @@ def main():
     with k1:
         render_kpi_card("Nachrichten", summary["messages"], "Chatvolumen", "#2563eb")
     with k2:
-        visible_now = api_visible_now or len(current_visible_accounts_df) or summary["users"]
+        visible_now = api_visible_now or len(get_current_visible_accounts_df()) or summary["users"]
         render_kpi_card("User", visible_now, "sichtbare Zuschauer via API", "#16a34a")
     with k3:
         render_kpi_card("Fragen", summary["questions"], "Frage-Druck", "#0ea5e9", GLOSSARY["Fragequote"])
