@@ -131,6 +131,17 @@ GLOSSARY = {
     "Sichtbare Accounts im Verlauf": "Anzahl unterschiedlicher Accounts, die irgendwann im bisherigen Mitschnitt sichtbar geworden sind, etwa über Kommentare, Joins, Likes, Shares, Follows oder Gifts.",
     "Geschätzte Präsenz": "Aufsummierte Dauer aller geschätzten Session-Blöcke eines sichtbaren Accounts im Mitschnitt. Wenn ein User rein, raus und später wieder rein kommt, werden die Blöcke addiert.",
     "Session-Blöcke": "Anzahl getrennter Anwesenheitsphasen eines sichtbaren Accounts. Eine neue Session beginnt, wenn zwischen zwei sichtbaren Aktivitäten länger keine Aktivität dieses Accounts erkannt wurde.",
+    "Geschätzte Reichweite seit Start": "Vorsichtige Annäherung an die kumulierte Zuschauer-Reichweite seit Start. Sie kombiniert sichtbare eindeutige Accounts mit positiven Zuschauerzuwächsen aus dem Viewer-Verlauf. Das ist keine exakte Unique-User-Zahl.",
+    "Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der sichtbar kommentierend oder sichtbar anwesend erscheint. Da stille Zuschauer nicht einzeln sichtbar sind, ist das eine Näherung.",
+    "Hold Rate": "Schätzt, wie viel eines Zuschaueranstiegs nach einem Spike kurze Zeit später noch übrig ist. Hohe Werte bedeuten, dass Peaks nicht sofort wieder zusammenfallen.",
+    "Recovery Time": "Geschätzte Zeit, bis sich ein kritischer Moment wieder unter eine entspanntere Eskalationsschwelle bewegt.",
+    "Narrative Half-Life": "Näherung, wie lange dominante Narrative oder Themenblöcke typischerweise tragen, bevor sie wechseln oder deutlich abflachen.",
+    "Antwortquote": "Anteil der Nachrichten, die sichtbar auf andere Accounts bezogen sind, etwa über @-Ansprache oder direkte Antwortmuster.",
+    "Dialogtiefe": "Näherung, wie stark echte Hin-und-her-Sequenzen entstehen statt isolierter Einzelbeiträge oder Monologe.",
+    "Antwortquote / Dialogtiefe": "Kombiniert zwei Signale für Gesprächsqualität: direkte Bezugnahme auf andere Accounts und sichtbare Hin-und-her-Sequenzen.",
+    "Returner Score": "Maß dafür, wie stark Accounts in mehreren getrennten Session-Blöcken wieder auftauchen.",
+    "Eskalations-Momentum": "Beschreibt nicht nur das aktuelle Risiko, sondern ob Eskalation gerade spürbar anzieht oder abkühlt.",
+    "Topic-to-Gift Score": "Zeigt, welche Narrative oder Themenblöcke zeitlich besonders stark mit Gifts oder Diamonds zusammenfallen.",
 }
 
 COLUMN_MAPPING = {
@@ -237,6 +248,11 @@ COLUMN_MAPPING = {
     "last_seen_presence": "Letzte sichtbare Präsenz",
     "last_presence_source": "Letzte Präsenzquelle",
     "last_source": "Letzte sichtbare Quelle",
+    "visible_cumulative": "Sichtbare Accounts kumuliert",
+    "estimated_total_reach": "Geschätzte Reichweite seit Start",
+    "commenter_present": "Kommentierend sichtbar anwesend",
+    "comment_activity_rate": "Kommentar-Aktivitätsquote",
+    "visible_activity_rate": "Sichtbarkeitsquote",
 }
 
 
@@ -914,6 +930,48 @@ def render_help_center():
             "So entsteht sie": "Wenn längere Inaktivität zwischen zwei sichtbaren Aktivitäten liegt, beginnt ein neuer Block.",
             "Interpretation": "Praktische Näherung für rein/raus/rein-Muster.",
         },
+        {
+            "Kennzahl": "Hold Rate",
+            "Aussage": "Wie viel eines Viewer-Spikes nach kurzer Zeit noch gehalten wird.",
+            "So entsteht sie": "Viewer-Anstieg beim Spike wird mit der Resthöhe einige Zeitfenster später verglichen.",
+            "Interpretation": "Hohe Werte bedeuten stabilere Peaks statt kurzer Ausschläge.",
+        },
+        {
+            "Kennzahl": "Recovery Time",
+            "Aussage": "Wie lange kritische Momente brauchen, bis sich die Eskalation wieder beruhigt.",
+            "So entsteht sie": "Zeit bis ein späteres Fenster wieder unter die Entspannungs-Schwelle fällt.",
+            "Interpretation": "Je kürzer, desto schneller erholt sich der Chat.",
+        },
+        {
+            "Kennzahl": "Narrative Half-Life",
+            "Aussage": "Wie lange dominante Narrative im Mittel halten.",
+            "So entsteht sie": "Dauer zusammenhängender Narrativ-Blöcke in der Timeline.",
+            "Interpretation": "Hohe Werte deuten auf stabile Themenphasen hin, niedrige auf schnelle Wechsel.",
+        },
+        {
+            "Kennzahl": "Antwortquote / Dialogtiefe",
+            "Aussage": "Wie dialogisch der Chat wirkt.",
+            "So entsteht sie": "Direkte @-Bezüge und sichtbare Hin-und-her-Sequenzen zwischen Accounts.",
+            "Interpretation": "Hilft zu unterscheiden zwischen Monolog, Callouts und echter Interaktion.",
+        },
+        {
+            "Kennzahl": "Returner Score",
+            "Aussage": "Wie stark Accounts wiederkehren.",
+            "So entsteht sie": "Session-Blöcke plus aufsummierte geschätzte Präsenz.",
+            "Interpretation": "Gut für Stammgäste, VIPs und wiederkehrende Mobilisierung.",
+        },
+        {
+            "Kennzahl": "Eskalations-Momentum",
+            "Aussage": "Ob Eskalation gerade anzieht oder abkühlt.",
+            "So entsteht sie": "Vergleicht jüngere und etwas ältere Eskalationsfenster.",
+            "Interpretation": "Ergänzt den aktuellen Eskalationswert um Richtung und Beschleunigung.",
+        },
+        {
+            "Kennzahl": "Topic-to-Gift Score",
+            "Aussage": "Welche Themenblöcke besonders mit Support/Gifts zusammenfallen.",
+            "So entsteht sie": "Narrativfenster werden mit Gift- und Diamond-Events derselben Zeit gekoppelt.",
+            "Interpretation": "Zeigt, welche Themen gerade besonders supportwirksam sind.",
+        },
     ]
     display_table(pd.DataFrame(metric_rows), height=360)
 
@@ -935,6 +993,9 @@ def render_help_center():
         {"Frage": "Wie oft war ein Account raus und wieder drin?", "Ort": "User-Insights -> Präsenz- und Session-Werte"},
         {"Frage": "Welche Nachrichten gehören zu einem kritischen Peak?", "Ort": "Lagebild / Diskurs-Analyse -> Kritische Momente"},
         {"Frage": "Welche Accounts haben unterstützt oder geschenkt?", "Ort": "Events & Support / Community"},
+        {"Frage": "Wie stabil sind Zuschauer-Spikes?", "Ort": "Lagebild -> Advanced KPIs"},
+        {"Frage": "Wie dialogisch ist der Chat?", "Ort": "Community -> Dialog & Returner"},
+        {"Frage": "Welche Themen bringen Support?", "Ort": "Events & Support -> Topic-to-Gift"},
     ]
     display_table(pd.DataFrame(where_rows), height=260)
 
@@ -2515,6 +2576,219 @@ def host_copilot_suggestions(comment_df: pd.DataFrame, correlation_df: pd.DataFr
     return pd.DataFrame(rows).head(5)
 
 
+@st.cache_data(ttl=8, show_spinner=False)
+def hold_rate_metrics(viewer_df: pd.DataFrame, horizon_steps: int = 3) -> tuple[pd.DataFrame, dict]:
+    columns = ["bucket", "spike_viewers", "lift", "retained_after_horizon", "hold_rate"]
+    if viewer_df is None or viewer_df.empty:
+        return pd.DataFrame(columns=columns), {"hold_rate": None, "spikes": 0}
+    df = viewer_df.sort_values("bucket").reset_index(drop=True)
+    spike_df = df[df["spike_signal"] & (df["viewer_delta"] > 0)].copy()
+    rows = []
+    for idx in spike_df.index.tolist():
+        row = df.iloc[idx]
+        baseline = max(float(row["viewer_count"] - row["viewer_delta"]), 1.0)
+        future_idx = min(idx + horizon_steps, len(df) - 1)
+        future_viewers = float(df.iloc[future_idx]["viewer_count"])
+        retained = max(future_viewers - baseline, 0.0)
+        lift = max(float(row["viewer_delta"]), 0.0)
+        hold_rate = retained / max(lift, 1.0)
+        rows.append({
+            "bucket": row["bucket"],
+            "spike_viewers": float(row["viewer_count"]),
+            "lift": lift,
+            "retained_after_horizon": retained,
+            "hold_rate": round(min(hold_rate, 1.5), 3),
+        })
+    out = pd.DataFrame(rows, columns=columns)
+    summary = {
+        "hold_rate": round(float(out["hold_rate"].mean()) * 100, 1) if not out.empty else None,
+        "spikes": int(len(out)),
+    }
+    return out, summary
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def recovery_time_metrics(critical_df: pd.DataFrame, threshold: float = 22.0) -> tuple[pd.DataFrame, dict]:
+    columns = ["bucket", "escalation_score", "signal", "recovered_at", "recovery_minutes"]
+    if critical_df is None or critical_df.empty:
+        return pd.DataFrame(columns=columns), {"avg_recovery_minutes": None, "recoveries": 0}
+    df = critical_df.sort_values("bucket").reset_index(drop=True)
+    rows = []
+    for idx, row in df.iterrows():
+        if float(row.get("escalation_score", 0)) < 30:
+            continue
+        future = df.iloc[idx + 1:].copy()
+        future = future[future["escalation_score"] < threshold]
+        recovered_at = None
+        recovery_minutes = None
+        if not future.empty:
+            recovered_at = future.iloc[0]["bucket"]
+            recovery_minutes = round((pd.to_datetime(recovered_at) - pd.to_datetime(row["bucket"])).total_seconds() / 60.0, 1)
+        rows.append({
+            "bucket": row["bucket"],
+            "escalation_score": round(float(row.get("escalation_score", 0)), 1),
+            "signal": row.get("signal", "-"),
+            "recovered_at": recovered_at,
+            "recovery_minutes": recovery_minutes,
+        })
+    out = pd.DataFrame(rows, columns=columns)
+    valid = out["recovery_minutes"].dropna() if not out.empty else pd.Series(dtype=float)
+    summary = {
+        "avg_recovery_minutes": round(float(valid.mean()), 1) if not valid.empty else None,
+        "recoveries": int(valid.shape[0]),
+    }
+    return out, summary
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def narrative_half_life_metrics(narrative_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    columns = ["label", "streaks", "avg_minutes", "max_minutes"]
+    if narrative_df is None or narrative_df.empty:
+        return pd.DataFrame(columns=columns), {"half_life_minutes": None}
+    df = narrative_df.sort_values("bucket").reset_index(drop=True)
+    streaks = []
+    current_label = None
+    current_start = None
+    current_end = None
+    for _, row in df.iterrows():
+        label = str(row.get("label", "-"))
+        bucket = pd.to_datetime(row.get("bucket"))
+        if current_label is None:
+            current_label = label
+            current_start = bucket
+            current_end = bucket
+            continue
+        if label == current_label:
+            current_end = bucket
+            continue
+        streaks.append({"label": current_label, "minutes": max(((current_end - current_start).total_seconds() / 60.0) + 2, 2)})
+        current_label = label
+        current_start = bucket
+        current_end = bucket
+    if current_label is not None:
+        streaks.append({"label": current_label, "minutes": max(((current_end - current_start).total_seconds() / 60.0) + 2, 2)})
+    if not streaks:
+        return pd.DataFrame(columns=columns), {"half_life_minutes": None}
+    streak_df = pd.DataFrame(streaks)
+    out = (
+        streak_df.groupby("label")
+        .agg(streaks=("minutes", "size"), avg_minutes=("minutes", "mean"), max_minutes=("minutes", "max"))
+        .reset_index()
+        .sort_values(["avg_minutes", "streaks"], ascending=[False, False])
+    )
+    out["avg_minutes"] = out["avg_minutes"].round(1)
+    out["max_minutes"] = out["max_minutes"].round(1)
+    summary = {"half_life_minutes": round(float(streak_df["minutes"].median()), 1)}
+    return out, summary
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def dialog_metrics(comment_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    columns = ["metric", "value", "detail"]
+    if comment_df is None or comment_df.empty:
+        return pd.DataFrame(columns=columns), {"reply_rate": None, "dialog_depth": None}
+    df = comment_df.sort_values("dt").reset_index(drop=True).copy()
+    df["mentions"] = df["text"].astype(str).str.findall(r"@([A-Za-z0-9._]+)")
+    reply_rows = df["mentions"].apply(lambda lst: len(lst) > 0)
+    reply_rate = float(reply_rows.mean()) if len(df) else 0.0
+    back_and_forth = 0
+    chains = []
+    current_chain = 1
+    for idx in range(1, len(df)):
+        prev = df.iloc[idx - 1]
+        curr = df.iloc[idx]
+        prev_mentions = {m.lower() for m in prev["mentions"]}
+        curr_mentions = {m.lower() for m in curr["mentions"]}
+        prev_user = str(prev["username"]).lower()
+        curr_user = str(curr["username"]).lower()
+        if prev_user != curr_user and ((curr_user in prev_mentions) or (prev_user in curr_mentions)):
+            current_chain += 1
+            back_and_forth += 1
+        else:
+            chains.append(current_chain)
+            current_chain = 1
+    chains.append(current_chain)
+    chain_values = [c for c in chains if c > 1]
+    dialog_depth = round(float(sum(chain_values) / len(chain_values)) if chain_values else 1.0, 2)
+    out = pd.DataFrame([
+        {"metric": "Antwortquote", "value": round(reply_rate * 100, 1), "detail": "Anteil sichtbarer Nachrichten mit direkter @-Ansprache."},
+        {"metric": "Dialogtiefe", "value": dialog_depth, "detail": "Durchschnittliche Länge sichtbarer Hin-und-her-Sequenzen."},
+        {"metric": "Dialogische Übergänge", "value": int(back_and_forth), "detail": "Wie oft direkte Bezugnahmen zwischen Accounts sichtbar wurden."},
+    ], columns=columns)
+    return out, {"reply_rate": round(reply_rate * 100, 1), "dialog_depth": dialog_depth}
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def returner_metrics(presence_summary_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    columns = ["username", "session_count", "estimated_presence_minutes", "returner_score", "currently_present"]
+    if presence_summary_df is None or presence_summary_df.empty:
+        return pd.DataFrame(columns=columns), {"returner_rate": None, "avg_returner_score": None}
+    df = presence_summary_df.copy()
+    df["returner_score"] = (
+        (df["session_count"].fillna(0) - 1).clip(lower=0) * 18
+        + df["estimated_presence_minutes"].fillna(0).clip(upper=180) * 0.35
+    ).round(1)
+    out = df[columns].sort_values(["returner_score", "session_count", "estimated_presence_minutes"], ascending=[False, False, False]).reset_index(drop=True)
+    returners = out[out["session_count"] > 1]
+    summary = {
+        "returner_rate": round(float((out["session_count"] > 1).mean()) * 100, 1) if not out.empty else None,
+        "avg_returner_score": round(float(returners["returner_score"].mean()), 1) if not returners.empty else 0.0,
+    }
+    return out, summary
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def escalation_momentum_metrics(critical_df: pd.DataFrame, viewer_df: pd.DataFrame | None = None) -> dict:
+    if critical_df is None or critical_df.empty:
+        return {"momentum": None, "label": "keine Daten", "delta": 0.0}
+    df = critical_df.sort_values("bucket").tail(6).copy()
+    if len(df) < 2:
+        return {"momentum": round(float(df["escalation_score"].iloc[-1]), 1), "label": "stabil", "delta": 0.0}
+    first_half = float(df.head(max(len(df)//2, 1))["escalation_score"].mean())
+    second_half = float(df.tail(max(len(df)//2, 1))["escalation_score"].mean())
+    delta = second_half - first_half
+    label = "stabil"
+    if delta >= 8:
+        label = "zieht stark an"
+    elif delta >= 3:
+        label = "zieht an"
+    elif delta <= -8:
+        label = "entspannt sich stark"
+    elif delta <= -3:
+        label = "entspannt sich"
+    return {"momentum": round(second_half, 1), "label": label, "delta": round(delta, 1)}
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def topic_to_gift_metrics(narrative_df: pd.DataFrame, event_df: pd.DataFrame, bucket: str = "2min") -> tuple[pd.DataFrame, dict]:
+    columns = ["label", "windows", "gifts", "diamonds", "gift_rate", "diamond_intensity", "topic_to_gift_score"]
+    if narrative_df is None or narrative_df.empty or event_df is None or event_df.empty:
+        return pd.DataFrame(columns=columns), {"top_topic": "-", "top_score": 0.0}
+    gifts = event_df[event_df["event_type"] == "gift"].copy()
+    if gifts.empty:
+        return pd.DataFrame(columns=columns), {"top_topic": "-", "top_score": 0.0}
+    gifts["bucket"] = gifts["dt"].dt.floor(bucket)
+    gift_agg = gifts.groupby("bucket").agg(gifts=("gift_count", "sum"), diamonds=("diamond_value", "sum")).reset_index()
+    merged = narrative_df[["bucket", "label", "messages"]].merge(gift_agg, on="bucket", how="left").fillna({"gifts": 0, "diamonds": 0})
+    out = (
+        merged.groupby("label")
+        .agg(
+            windows=("bucket", "size"),
+            gifts=("gifts", "sum"),
+            diamonds=("diamonds", "sum"),
+        )
+        .reset_index()
+    )
+    out["gift_rate"] = (out["gifts"] / out["windows"].clip(lower=1)).round(2)
+    out["diamond_intensity"] = (out["diamonds"] / out["windows"].clip(lower=1)).round(1)
+    out["topic_to_gift_score"] = (
+        out["gift_rate"] * 14 + out["diamond_intensity"] * 0.12 + out["windows"].clip(upper=8) * 1.5
+    ).round(1)
+    out = out.sort_values(["topic_to_gift_score", "diamonds", "gifts"], ascending=[False, False, False]).reset_index(drop=True)
+    top = out.iloc[0] if not out.empty else {}
+    return out[columns], {"top_topic": top.get("label", "-") if len(out) else "-", "top_score": top.get("topic_to_gift_score", 0.0) if len(out) else 0.0}
+
+
 def wirkung_indices(comment_df: pd.DataFrame, impact: dict, fairness: dict, push_df: pd.DataFrame, risk_df: pd.DataFrame) -> pd.DataFrame:
     if comment_df.empty:
         return pd.DataFrame(columns=["index", "score", "basis"])
@@ -3403,6 +3677,68 @@ def render_lurker_conversion(viewer_df: pd.DataFrame, height: int = 240):
     st.altair_chart(chart, use_container_width=True)
 
 
+def render_activity_rate_chart(audience_df: pd.DataFrame, height: int = 240):
+    if audience_df is None or audience_df.empty:
+        st.info("Noch keine Aktivitätsquote verfügbar.")
+        return
+    long_df = pd.DataFrame()
+    for col, label in [
+        ("visible_activity_rate", "Sichtbare Aktivitätsquote"),
+        ("comment_activity_rate", "Kommentar-Aktivitätsquote"),
+    ]:
+        if col not in audience_df.columns:
+            continue
+        tmp = audience_df[["bucket", col]].copy()
+        tmp.columns = ["bucket", "rate"]
+        tmp["metric"] = label
+        long_df = pd.concat([long_df, tmp], ignore_index=True)
+    if long_df.empty:
+        st.info("Noch keine Aktivitätsquote verfügbar.")
+        return
+    chart = alt.Chart(long_df).mark_line(point=True).encode(
+        x=alt.X("bucket:T", title="Zeit"),
+        y=alt.Y("rate:Q", title="Quote", axis=alt.Axis(format="%")),
+        color=alt.Color("metric:N", title="Metrik"),
+        tooltip=[
+            alt.Tooltip("bucket:T", title="Zeit"),
+            alt.Tooltip("metric:N", title="Metrik"),
+            alt.Tooltip("rate:Q", title="Quote", format=".1%"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_reach_chart(audience_df: pd.DataFrame, height: int = 240):
+    if audience_df is None or audience_df.empty:
+        st.info("Noch keine Reichweiten-Näherung verfügbar.")
+        return
+    long_df = pd.DataFrame()
+    for col, label in [
+        ("visible_cumulative", "Sichtbare Accounts kumuliert"),
+        ("estimated_total_reach", "Geschätzte Reichweite seit Start"),
+    ]:
+        if col not in audience_df.columns:
+            continue
+        tmp = audience_df[["bucket", col]].copy()
+        tmp.columns = ["bucket", "count"]
+        tmp["metric"] = label
+        long_df = pd.concat([long_df, tmp], ignore_index=True)
+    if long_df.empty:
+        st.info("Noch keine Reichweiten-Näherung verfügbar.")
+        return
+    chart = alt.Chart(long_df).mark_line(point=True).encode(
+        x=alt.X("bucket:T", title="Zeit"),
+        y=alt.Y("count:Q", title="Accounts", axis=alt.Axis(format=".0f", tickMinStep=1)),
+        color=alt.Color("metric:N", title="Metrik"),
+        tooltip=[
+            alt.Tooltip("bucket:T", title="Zeit"),
+            alt.Tooltip("metric:N", title="Metrik"),
+            alt.Tooltip("count:Q", title="Wert", format=".0f"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_temporal_correlations(correlation_df: pd.DataFrame, height: int = 280):
     if correlation_df is None or correlation_df.empty:
         st.info("Noch keine starken Zeit-Korrelationen erkannt.")
@@ -3997,6 +4333,82 @@ def visible_presence_timeline(
         ]["username"].nunique()
         rows.append({"bucket": bucket_dt, "present_users": int(active)})
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def visible_cumulative_timeline(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
+    activity_df = visible_activity_frame(comment_df, event_df)
+    if activity_df.empty:
+        return pd.DataFrame(columns=["bucket", "visible_cumulative"])
+    activity_df = activity_df.copy()
+    activity_df["bucket"] = pd.to_datetime(activity_df["dt"], errors="coerce").dt.floor(bucket)
+    activity_df = activity_df.dropna(subset=["bucket"]).sort_values("bucket")
+    seen = set()
+    rows = []
+    for bucket_val, group in activity_df.groupby("bucket"):
+        seen.update(group["username"].dropna().astype(str).tolist())
+        rows.append({"bucket": bucket_val, "visible_cumulative": int(len(seen))})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def audience_approximation_frame(
+    viewer_df: pd.DataFrame,
+    presence_df: pd.DataFrame,
+    commenter_presence_df: pd.DataFrame,
+    cumulative_visible_df: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = [
+        "bucket",
+        "viewer_count",
+        "visible_present",
+        "commenter_present",
+        "visible_cumulative",
+        "estimated_total_reach",
+        "visible_activity_rate",
+        "comment_activity_rate",
+    ]
+    frames = []
+    if viewer_df is not None and not viewer_df.empty:
+        frames.append(viewer_df[["bucket", "viewer_count"]].copy())
+    if presence_df is not None and not presence_df.empty:
+        frames.append(
+            presence_df[["bucket", "present_users"]]
+            .rename(columns={"present_users": "visible_present"})
+            .copy()
+        )
+    if commenter_presence_df is not None and not commenter_presence_df.empty:
+        frames.append(
+            commenter_presence_df[["bucket", "present_users"]]
+            .rename(columns={"present_users": "commenter_present"})
+            .copy()
+        )
+    if cumulative_visible_df is not None and not cumulative_visible_df.empty:
+        frames.append(cumulative_visible_df[["bucket", "visible_cumulative"]].copy())
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    out = frames[0]
+    for frame in frames[1:]:
+        out = out.merge(frame, on="bucket", how="outer")
+    out = out.sort_values("bucket").reset_index(drop=True)
+    for col in columns:
+        if col not in out.columns:
+            out[col] = 0
+    out["viewer_count"] = out["viewer_count"].fillna(0).replace(0, pd.NA).ffill().fillna(0)
+    out["visible_present"] = out["visible_present"].fillna(0)
+    out["commenter_present"] = out["commenter_present"].fillna(0)
+    out["visible_cumulative"] = out["visible_cumulative"].fillna(0).cummax()
+    baseline_viewers = float(out.loc[out["viewer_count"] > 0, "viewer_count"].iloc[0]) if (out["viewer_count"] > 0).any() else 0.0
+    viewer_growth = out["viewer_count"].diff().fillna(out["viewer_count"]).clip(lower=0).cumsum()
+    out["estimated_total_reach"] = pd.Series(
+        [
+            max(float(vis), baseline_viewers + float(growth))
+            for vis, growth in zip(out["visible_cumulative"], viewer_growth)
+        ]
+    )
+    out["visible_activity_rate"] = out["visible_present"] / out["viewer_count"].clip(lower=1)
+    out["comment_activity_rate"] = out["commenter_present"] / out["viewer_count"].clip(lower=1)
+    return out[columns]
 
 
 def user_presence_sessions(username: str, presence_sessions_df: pd.DataFrame | None) -> pd.DataFrame:
@@ -5253,10 +5665,16 @@ def main():
     event_timeline_df = event_timeline(event_detail_df)
     viewer_df = viewer_dynamics(comment_df, event_detail_df)
     presence_df = visible_presence_timeline(comment_df, event_detail_df)
+    commenter_presence_df = visible_presence_timeline(comment_df, pd.DataFrame())
     presence_summary_df = visible_presence_summary(comment_df, event_detail_df)
+    cumulative_visible_df = visible_cumulative_timeline(comment_df, event_detail_df)
+    audience_df = audience_approximation_frame(viewer_df, presence_df, commenter_presence_df, cumulative_visible_df)
     current_visible_accounts_df = presence_summary_df[presence_summary_df["currently_present"]].copy() if not presence_summary_df.empty else pd.DataFrame()
     correlation_df = temporal_correlation_signals(viewer_df)
     correlation_engine_df = event_correlation_engine(comment_df, event_detail_df)
+    hold_df, hold_summary = hold_rate_metrics(viewer_df)
+    dialog_df, dialog_summary = dialog_metrics(comment_df)
+    returner_df, returner_summary = returner_metrics(presence_summary_df)
     gift_users_df = gift_leaderboard(event_detail_df)
     gift_types_df = gift_type_matrix(event_detail_df)
     funnel_df = activation_funnel(comment_df, event_detail_df)
@@ -5277,12 +5695,16 @@ def main():
     greeting_df = greeting_edges(comment_df)
     critical_df = critical_moments(comment_df)
     critical_brief_df = critical_moment_brief(critical_df, viewer_df)
+    recovery_df, recovery_summary = recovery_time_metrics(critical_df)
+    escalation_momentum = escalation_momentum_metrics(critical_df, viewer_df)
     fairness = fairness_metrics(comment_df)
     trigger_df = trigger_effect_analysis(comment_df)
     push_df = narrative_push_detection(comment_df)
     archetype_df = user_archetypes(comment_df, scores_df)
     attention_df = attention_vs_substance(comment_df)
     influence_df = influence_scores(comment_df, scores_df, influencer_df, support_df)
+    narrative_half_life_df, narrative_half_life_summary = narrative_half_life_metrics(narrative_timeline_df)
+    topic_gift_df, topic_gift_summary = topic_to_gift_metrics(narrative_timeline_df, event_detail_df)
     power_df = power_index(comment_df, scores_df, influencer_df, support_df, influence_df)
     risk_radar_df = live_risk_radar(comment_df, scores_df, impact, viewer_df, support_df)
     host_copilot_df = host_copilot_suggestions(comment_df, correlation_df, risk_radar_df, push_df)
@@ -5399,10 +5821,38 @@ def main():
 
         st.subheader("Zuschauer- und User-Verlauf")
         render_audience_timeline(viewer_df, presence_df, height=290)
-        kpi_a, kpi_b = st.columns(2)
+        est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else len(presence_summary_df)
+        visible_cumulative = int(audience_df["visible_cumulative"].max()) if not audience_df.empty else len(presence_summary_df)
+        activity_rate_now = float(audience_df["comment_activity_rate"].iloc[-1]) if not audience_df.empty else 0.0
+        kpi_a, kpi_b, kpi_c, kpi_d = st.columns(4)
         kpi_a.metric("Geschätzt sichtbar anwesend", len(current_visible_accounts_df))
-        kpi_b.metric("Sichtbare Accounts im Verlauf", len(presence_summary_df))
+        kpi_b.metric("Sichtbare Accounts im Verlauf", visible_cumulative)
+        kpi_c.metric("Geschätzte Reichweite seit Start", est_total_reach)
+        kpi_d.metric("Kommentar-Aktivitätsquote", f"{activity_rate_now*100:.1f}%")
         st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie schätzt, wie viele sichtbar gewordene Accounts zu diesem Zeitpunkt noch anwesend sind. Grundlage sind sichtbare Aktivitäten mit Session-Fortschreibung.")
+        reach_left, reach_right = st.columns(2)
+        with reach_left:
+            st.subheader("Kumulierte Reichweite")
+            render_reach_chart(audience_df, height=240)
+        with reach_right:
+            st.subheader("Aktivitätsquote")
+            render_activity_rate_chart(audience_df, height=240)
+
+        st.subheader("Advanced KPIs")
+        adv1, adv2, adv3, adv4 = st.columns(4)
+        adv1.metric("Hold Rate", f"{hold_summary['hold_rate']:.1f}%" if hold_summary.get("hold_rate") is not None else "-", help=GLOSSARY["Hold Rate"])
+        adv2.metric("Recovery Time", f"{recovery_summary['avg_recovery_minutes']:.1f} min" if recovery_summary.get("avg_recovery_minutes") is not None else "-", help=GLOSSARY["Recovery Time"])
+        adv3.metric("Narrative Half-Life", f"{narrative_half_life_summary['half_life_minutes']:.1f} min" if narrative_half_life_summary.get("half_life_minutes") is not None else "-", help=GLOSSARY["Narrative Half-Life"])
+        adv4.metric(
+            "Eskalations-Momentum",
+            f"{escalation_momentum['momentum']:.1f}" if escalation_momentum.get("momentum") is not None else "-",
+            delta=f"{escalation_momentum.get('delta', 0):+.1f}",
+            help=GLOSSARY["Eskalations-Momentum"],
+        )
+        st.caption(
+            f"Momentum aktuell: {escalation_momentum.get('label', '-')}. "
+            f"Spikes ausgewertet: {hold_summary.get('spikes', 0)} | Erholungen erkannt: {recovery_summary.get('recoveries', 0)}."
+        )
 
         st.subheader("Viewer Dynamics & Risk Radar")
         vd1, vd2 = st.columns([1.2, 1])
@@ -5624,9 +6074,13 @@ def main():
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
             if not total_visible_accounts_df.empty:
+                est_total_reach = int(audience_df["estimated_total_reach"].max()) if not audience_df.empty else len(total_visible_accounts_df)
+                visible_comment_rate = float(audience_df["comment_activity_rate"].iloc[-1]) if not audience_df.empty else 0.0
                 st.caption(
                     f"Geschätzt aktuell sichtbar anwesend: {len(current_visible_accounts_df)} Accounts. "
-                    f"Insgesamt sichtbar im bisherigen Verlauf: {len(total_visible_accounts_df)} Accounts."
+                    f"Insgesamt sichtbar im bisherigen Verlauf: {len(total_visible_accounts_df)} Accounts. "
+                    f"Geschätzte Reichweite seit Start: {est_total_reach}. "
+                    f"Kommentar-Aktivitätsquote aktuell: {visible_comment_rate*100:.1f}%."
                 )
             if not visible_accounts_df.empty:
                 expander_label = f"Geschätzt aktuell anwesende sichtbare Accounts ({len(current_visible_accounts_df)})"
@@ -5657,6 +6111,12 @@ def main():
                 st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             render_audience_timeline(viewer_df, presence_df, height=220)
             st.caption("Die grüne Linie zeigt geschätzt aktuell anwesende sichtbare Accounts. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl. Wenn TikTok zwei Viewer-Felder liefert, bevorzugt die App die größere Gesamtzahl.")
+            with st.expander("Reichweite & Aktivitätsquote", expanded=False):
+                r1, r2 = st.columns(2)
+                with r1:
+                    render_reach_chart(audience_df, height=220)
+                with r2:
+                    render_activity_rate_chart(audience_df, height=220)
             if not joiners_df.empty:
                 st.caption("Neue sichtbare Beitritte")
                 for _, join_row in joiners_df.head(5).iterrows():
@@ -5820,6 +6280,19 @@ def main():
                 )
             else:
                 st.info("Noch keine sichtbaren Anwesenheitssignale verfügbar.")
+
+            st.subheader("Dialog & Returner")
+            dleft, dright = st.columns(2)
+            with dleft:
+                if not dialog_df.empty:
+                    display_table(dialog_df, height=220)
+                else:
+                    st.info("Noch keine Dialog-KPIs verfügbar.")
+            with dright:
+                if not returner_df.empty:
+                    display_table(returner_df.head(15), height=220)
+                else:
+                    st.info("Noch keine Returner-KPIs verfügbar.")
 
             st.subheader("Power Index")
             render_power_index(power_df, height=270)
@@ -6017,6 +6490,18 @@ def main():
                 else:
                     st.info("Noch keine Gift-Intelligence verfügbar.")
 
+            st.subheader("Topic-to-Gift", help=GLOSSARY["Topic-to-Gift Score"])
+            tg1, tg2 = st.columns([1.1, 1])
+            with tg1:
+                if not topic_gift_df.empty:
+                    display_table(topic_gift_df.head(15), height=260)
+                else:
+                    st.info("Noch keine belastbare Topic-to-Gift-Auswertung verfügbar.")
+            with tg2:
+                st.metric("Top-Thema", topic_gift_summary.get("top_topic", "-"))
+                st.metric("Topic-to-Gift Score", topic_gift_summary.get("top_score", 0.0))
+                st.caption("Die Auswertung koppelt Narrative im Zeitfenster mit Gifts und Diamonds. Sie zeigt zeitliche Nähe, keine bewiesene Ursache.")
+
             st.subheader("Drop-/Spike- und Korrelationssignale", help=GLOSSARY["Zeit-Korrelation"])
             c_left, c_right = st.columns([1.1, 1])
             with c_left:
@@ -6139,6 +6624,13 @@ def main():
                 display_table(critical_brief_df.head(12), height=240)
             else:
                 st.info("Noch keine kritischen Momente für die Kurzansicht.")
+            rcols = st.columns(3)
+            rcols[0].metric("Recovery Time", f"{recovery_summary['avg_recovery_minutes']:.1f} min" if recovery_summary.get("avg_recovery_minutes") is not None else "-", help=GLOSSARY["Recovery Time"])
+            rcols[1].metric("Eskalations-Momentum", escalation_momentum.get("label", "-"), delta=f"{escalation_momentum.get('delta', 0):+.1f}", help=GLOSSARY["Eskalations-Momentum"])
+            rcols[2].metric("Recoveries", recovery_summary.get("recoveries", 0))
+            if not recovery_df.empty:
+                with st.expander("Recovery-Fenster anzeigen", expanded=False):
+                    display_table(recovery_df.head(20), height=220)
             with st.expander("Kritische Momente erklärt", expanded=False):
                 render_glossary(["Kritische Momente", "Eskalations-Score", "Trigger-Rate", "Abwertungsquote", "Dominanz"])
         with dt2:
@@ -6173,6 +6665,10 @@ def main():
                 render_temporal_correlations(correlation_df, height=330)
             with z2:
                 render_risk_radar(risk_radar_df, height=330)
+            kcols = st.columns(3)
+            kcols[0].metric("Hold Rate", f"{hold_summary['hold_rate']:.1f}%" if hold_summary.get("hold_rate") is not None else "-", help=GLOSSARY["Hold Rate"])
+            kcols[1].metric("Antwortquote", f"{dialog_summary['reply_rate']:.1f}%" if dialog_summary.get("reply_rate") is not None else "-", help=GLOSSARY["Antwortquote"])
+            kcols[2].metric("Dialogtiefe", dialog_summary.get("dialog_depth", "-"), help=GLOSSARY["Dialogtiefe"])
             st.subheader("Lag-Analyse / Event-Korrelation Engine")
             if not correlation_engine_df.empty:
                 display_table(correlation_engine_df.head(18), height=260)
@@ -6181,6 +6677,9 @@ def main():
             if not viewer_df.empty:
                 with st.expander("Viewer-Dynamics-Tabelle", expanded=False):
                     display_table(viewer_df.tail(40), height=360)
+            if not hold_df.empty:
+                with st.expander("Hold-Rate-Fenster", expanded=False):
+                    display_table(hold_df.head(20), height=220)
             with st.expander("Zeit-Korrelationen erklärt", expanded=False):
                 render_glossary(["Zeit-Korrelation", "Viewer Drop", "Lurker Ratio", "Conversion"])
         with dt5:
@@ -6199,6 +6698,19 @@ def main():
                 display_table(communities_df.head(15), height=220)
             else:
                 st.info("Noch keine Community-Strukturen erkannt.")
+            extra_left, extra_right = st.columns(2)
+            with extra_left:
+                st.subheader("Returner Score")
+                if not returner_df.empty:
+                    display_table(returner_df.head(15), height=220)
+                else:
+                    st.info("Noch keine Returner-Signale.")
+            with extra_right:
+                st.subheader("Narrative Half-Life")
+                if not narrative_half_life_df.empty:
+                    display_table(narrative_half_life_df.head(12), height=220)
+                else:
+                    st.info("Noch keine Half-Life-Auswertung verfügbar.")
             st.subheader("Narrative Push Detection")
             if not push_df.empty:
                 display_table(push_df.head(20), height=240)
