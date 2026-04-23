@@ -132,7 +132,7 @@ GLOSSARY = {
     "Geschätzte Präsenz": "Aufsummierte Dauer aller geschätzten Session-Blöcke eines sichtbaren Accounts im Mitschnitt. Wenn ein User rein, raus und später wieder rein kommt, werden die Blöcke addiert.",
     "Session-Blöcke": "Anzahl getrennter Anwesenheitsphasen eines sichtbaren Accounts. Eine neue Session beginnt, wenn zwischen zwei sichtbaren Aktivitäten länger keine Aktivität dieses Accounts erkannt wurde.",
     "Geschätzte Reichweite seit Start": "Vorsichtige Annäherung an die kumulierte Zuschauer-Reichweite seit Start. Sie kombiniert sichtbare eindeutige Accounts mit positiven Zuschauerzuwächsen aus dem Viewer-Verlauf. Das ist keine exakte Unique-User-Zahl.",
-    "Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der sichtbar kommentierend oder sichtbar anwesend erscheint. Da stille Zuschauer nicht einzeln sichtbar sind, ist das eine Näherung.",
+    "Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der sichtbar kommentierend oder sichtbar anwesend erscheint. Die Quote wird auf 0 bis 100 Prozent begrenzt, weil sie eine Näherung und keine exakte Messung aller stillen Zuschauer ist.",
     "Hold Rate": "Schätzt, wie viel eines Zuschaueranstiegs nach einem Spike kurze Zeit später noch übrig ist. Hohe Werte bedeuten, dass Peaks nicht sofort wieder zusammenfallen.",
     "Recovery Time": "Geschätzte Zeit, bis sich ein kritischer Moment wieder unter eine entspanntere Eskalationsschwelle bewegt.",
     "Narrative Half-Life": "Näherung, wie lange dominante Narrative oder Themenblöcke typischerweise tragen, bevor sie wechseln oder deutlich abflachen.",
@@ -142,6 +142,8 @@ GLOSSARY = {
     "Returner Score": "Maß dafür, wie stark Accounts in mehreren getrennten Session-Blöcken wieder auftauchen.",
     "Eskalations-Momentum": "Beschreibt nicht nur das aktuelle Risiko, sondern ob Eskalation gerade spürbar anzieht oder abkühlt.",
     "Topic-to-Gift Score": "Zeigt, welche Narrative oder Themenblöcke zeitlich besonders stark mit Gifts oder Diamonds zusammenfallen.",
+    "Kommentar-Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der als kommentierend sichtbar wird. Grundlage ist die Schätzung sichtbar anwesender Kommentatoren im Verhältnis zur aktuellen Zuschauerzahl.",
+    "Sichtbare Aktivitätsquote": "Anteil der aktuellen Zuschauerzahl, der überhaupt sichtbar anwesend erscheint, also über Kommentare oder andere sichtbare Events. Diese Quote ist breiter als die reine Kommentar-Aktivitätsquote.",
 }
 
 COLUMN_MAPPING = {
@@ -971,6 +973,18 @@ def render_help_center():
             "Aussage": "Welche Themenblöcke besonders mit Support/Gifts zusammenfallen.",
             "So entsteht sie": "Narrativfenster werden mit Gift- und Diamond-Events derselben Zeit gekoppelt.",
             "Interpretation": "Zeigt, welche Themen gerade besonders supportwirksam sind.",
+        },
+        {
+            "Kennzahl": "Kommentar-Aktivitätsquote",
+            "Aussage": "Welcher Anteil der aktuellen Zuschauerzahl sichtbar kommentiert.",
+            "So entsteht sie": "Geschätzt sichtbare Kommentatoren werden zur aktuellen Zuschauerzahl ins Verhältnis gesetzt.",
+            "Interpretation": "Zeigt aktive Schreibbeteiligung. Niedriger als die breitere sichtbare Aktivitätsquote.",
+        },
+        {
+            "Kennzahl": "Sichtbare Aktivitätsquote",
+            "Aussage": "Welcher Anteil der aktuellen Zuschauerzahl über irgendein sichtbares Signal auftaucht.",
+            "So entsteht sie": "Geschätzt sichtbar anwesende Accounts aus Kommentaren und sichtbaren Events werden zur aktuellen Zuschauerzahl ins Verhältnis gesetzt.",
+            "Interpretation": "Breiteres Aktivitätssignal als reine Kommentare. Beide Quoten sind Näherungen und auf 100 Prozent gedeckelt.",
         },
     ]
     display_table(pd.DataFrame(metric_rows), height=360)
@@ -4406,8 +4420,12 @@ def audience_approximation_frame(
             for vis, growth in zip(out["visible_cumulative"], viewer_growth)
         ]
     )
-    out["visible_activity_rate"] = out["visible_present"] / out["viewer_count"].clip(lower=1)
-    out["comment_activity_rate"] = out["commenter_present"] / out["viewer_count"].clip(lower=1)
+    out["visible_activity_rate"] = (
+        out["visible_present"] / out["viewer_count"].clip(lower=1)
+    ).clip(lower=0, upper=1)
+    out["comment_activity_rate"] = (
+        out["commenter_present"] / out["viewer_count"].clip(lower=1)
+    ).clip(lower=0, upper=1)
     return out[columns]
 
 
