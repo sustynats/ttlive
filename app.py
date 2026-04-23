@@ -554,6 +554,14 @@ def safe_int(value, default: int = 0) -> int:
         return default
 
 
+def resolved_viewer_count(viewer_count, total_viewer_count) -> int:
+    current = safe_int(viewer_count, 0)
+    total = safe_int(total_viewer_count, 0)
+    if total > 0:
+        return total
+    return current
+
+
 def live_user_metadata(user_obj) -> dict:
     if user_obj is None:
         return {}
@@ -1645,11 +1653,16 @@ def viewer_dynamics(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: st
     if event_df is not None and not event_df.empty and event_df["dt"].notna().any():
         ev = event_df.copy()
         ev["bucket"] = ev["dt"].dt.floor(bucket)
+        ev["resolved_viewer_count"] = ev.apply(
+            lambda r: resolved_viewer_count(r.get("viewer_count"), r.get("total_viewer_count")),
+            axis=1,
+        )
         viewer = (
             ev[ev["event_type"] == "viewer_update"]
-            .groupby("bucket")["viewer_count"]
+            .groupby("bucket")["resolved_viewer_count"]
             .max()
             .reset_index()
+            .rename(columns={"resolved_viewer_count": "viewer_count"})
         )
         event_agg = ev.groupby("bucket").agg(
             likes=("like_count", "sum"),
@@ -2044,6 +2057,22 @@ def critical_moment_brief(critical_df: pd.DataFrame, viewer_df: pd.DataFrame | N
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows).sort_values(["escalation_score", "bucket"], ascending=[False, False]).reset_index(drop=True)
+
+
+def critical_moment_messages(comment_df: pd.DataFrame, bucket_value, bucket: str = "1min") -> pd.DataFrame:
+    columns = ["timestamp", "username", "tone", "is_question", "has_trigger", "has_toxic_marker", "text"]
+    if comment_df is None or comment_df.empty or bucket_value is None:
+        return pd.DataFrame(columns=columns)
+    try:
+        bucket_ts = pd.to_datetime(bucket_value)
+    except Exception:
+        return pd.DataFrame(columns=columns)
+    df = comment_df.copy()
+    df["bucket"] = df["dt"].dt.floor(bucket)
+    out = df[df["bucket"] == bucket_ts].sort_values("dt", ascending=False)
+    if out.empty:
+        return pd.DataFrame(columns=columns)
+    return out[[c for c in columns if c in out.columns]].reset_index(drop=True)
 
 
 def narrative_label_from_words(words: list[str]) -> str:
@@ -3078,6 +3107,40 @@ def render_critical_moment_dashboard(critical_df: pd.DataFrame):
     st.altair_chart(chart, use_container_width=True)
 
 
+def render_critical_moment_details(critical_df: pd.DataFrame, comment_df: pd.DataFrame, key_prefix: str = "critical"):
+    if critical_df is None or critical_df.empty:
+        return
+    focus_df = critical_df[critical_df["signal"].isin(["angespannt", "kritisch"])].sort_values("bucket", ascending=False).head(12)
+    if focus_df.empty:
+        return
+    st.caption("Details zu kritischen Momenten")
+    selected_key = f"{key_prefix}_selected_bucket"
+    cols = st.columns(3)
+    for idx, (_, row) in enumerate(focus_df.iterrows()):
+        bucket_label = pd.to_datetime(row["bucket"]).strftime("%H:%M")
+        label = f"{bucket_label} · {row['signal']} · {int(row['messages'])} Nachrichten"
+        with cols[idx % 3]:
+            if st.button(label, key=f"{key_prefix}_moment_{bucket_label}_{idx}", use_container_width=True):
+                st.session_state[selected_key] = str(row["bucket"])
+    selected_bucket = st.session_state.get(selected_key)
+    if not selected_bucket:
+        selected_bucket = str(focus_df.iloc[0]["bucket"])
+    detail_row = focus_df[focus_df["bucket"].astype(str) == str(selected_bucket)]
+    if detail_row.empty:
+        detail_row = focus_df.head(1)
+        selected_bucket = str(detail_row.iloc[0]["bucket"])
+    moment = detail_row.iloc[0]
+    messages_df = critical_moment_messages(comment_df, selected_bucket)
+    st.markdown(
+        f"**Ausgewählter Moment:** {pd.to_datetime(moment['bucket']).strftime('%H:%M')} · "
+        f"{moment['signal']} · Score {moment['escalation_score']}"
+    )
+    if not messages_df.empty:
+        display_table(messages_df, height=220)
+    else:
+        st.info("Für dieses Zeitfenster wurden keine Nachrichten gefunden.")
+
+
 def render_event_timeline(event_timeline_df: pd.DataFrame, height: int = 280):
     if event_timeline_df.empty:
         st.info("Noch keine Live-Events für eine Zeitreihe.")
@@ -3151,7 +3214,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
         series_frames.append(
             viewer_df[["bucket", "active_users"]]
             .rename(columns={"active_users": "count"})
-            .assign(series="Sichtbar aktive User")
+            .assign(series="Aktiv im Zeitfenster")
         )
     if not series_frames:
         st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
@@ -3163,7 +3226,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
         color=alt.Color(
             "series:N",
             title="Reihe",
-            scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbar aktive User"], range=["#2563eb", "#16a34a"]),
+            scale=alt.Scale(domain=["Zuschauer gesamt", "Aktiv im Zeitfenster"], range=["#2563eb", "#16a34a"]),
         ),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
@@ -3563,7 +3626,7 @@ def all_visible_users(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> list[
     return sorted(u for u in users if u not in {"SYSTEM", "FEHLER", ""})
 
 
-def visible_account_snapshot(comment_df: pd.DataFrame, event_df: pd.DataFrame, limit: int = 40) -> pd.DataFrame:
+def visible_account_snapshot(comment_df: pd.DataFrame, event_df: pd.DataFrame, limit: int | None = 40) -> pd.DataFrame:
     rows = []
     if comment_df is not None and not comment_df.empty:
         comment_recent = (
@@ -3605,21 +3668,30 @@ def visible_account_snapshot(comment_df: pd.DataFrame, event_df: pd.DataFrame, l
     df = (
         df.sort_values("last_seen_dt", ascending=False)
         .drop_duplicates(subset=["username"], keep="first")
-        .head(limit)
         .reset_index(drop=True)
     )
+    if limit is not None:
+        df = df.head(limit).reset_index(drop=True)
     return df[["username", "last_seen", "source", "avatar_url"]]
 
 
 def latest_viewer_count(event_df: pd.DataFrame) -> dict:
     if event_df is None or event_df.empty:
-        return {"viewer_count": None, "total_viewer_count": None, "timestamp": None}
-    viewer_rows = event_df[(event_df["event_type"] == "viewer_update") & (event_df["viewer_count"] > 0)].copy()
+        return {"viewer_count": None, "raw_viewer_count": None, "total_viewer_count": None, "timestamp": None}
+    viewer_rows = event_df[event_df["event_type"] == "viewer_update"].copy()
     if viewer_rows.empty:
-        return {"viewer_count": None, "total_viewer_count": None, "timestamp": None}
+        return {"viewer_count": None, "raw_viewer_count": None, "total_viewer_count": None, "timestamp": None}
+    viewer_rows["resolved_viewer_count"] = viewer_rows.apply(
+        lambda r: resolved_viewer_count(r.get("viewer_count"), r.get("total_viewer_count")),
+        axis=1,
+    )
+    viewer_rows = viewer_rows[viewer_rows["resolved_viewer_count"] > 0].copy()
+    if viewer_rows.empty:
+        return {"viewer_count": None, "raw_viewer_count": None, "total_viewer_count": None, "timestamp": None}
     row = viewer_rows.sort_values("dt", ascending=False).iloc[0]
     return {
-        "viewer_count": safe_int(row.get("viewer_count"), 0),
+        "viewer_count": safe_int(row.get("resolved_viewer_count"), 0),
+        "raw_viewer_count": safe_int(row.get("viewer_count"), 0),
         "total_viewer_count": safe_int(row.get("total_viewer_count"), 0),
         "timestamp": row.get("timestamp"),
     }
@@ -4904,7 +4976,11 @@ def main():
     meta3.info(f"Status: {board['status'] if board else '-'}")
     if viewer_state["viewer_count"] is not None:
         viewer_label = f"{viewer_state['viewer_count']}"
-        if viewer_state.get("total_viewer_count"):
+        raw_viewer = viewer_state.get("raw_viewer_count")
+        total_viewer = viewer_state.get("total_viewer_count")
+        if raw_viewer and total_viewer and raw_viewer != total_viewer:
+            viewer_label += f" (sichtbar im Event: {raw_viewer})"
+        elif total_viewer and total_viewer != viewer_state["viewer_count"]:
             viewer_label += f" / gesamt {viewer_state['total_viewer_count']}"
         meta4.info(f"Zuschauer: {viewer_label}")
     else:
@@ -4962,6 +5038,7 @@ def main():
             render_tone_timeline(comment_df, height=260)
         with d2:
             render_critical_moment_dashboard(critical_df)
+            render_critical_moment_details(critical_df, comment_df, key_prefix="overview_critical")
 
         st.subheader("Tonlagen-Heatmap & Alert-Protokoll")
         h1, h2 = st.columns([1.15, 1])
@@ -4976,7 +5053,7 @@ def main():
 
         st.subheader("Zuschauer- und User-Verlauf")
         render_audience_timeline(viewer_df, height=290)
-        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt, wie viele Accounts im gleichen Zeitfenster sichtbar aktiv waren.")
+        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt, wie viele Accounts im jeweiligen Zeitfenster sichtbar aktiv waren, nicht die kumulierte Zahl aller bisher sichtbaren Accounts.")
 
         st.subheader("Viewer Dynamics & Risk Radar")
         vd1, vd2 = st.columns([1.2, 1])
@@ -5186,16 +5263,31 @@ def main():
                 )
 
             st.subheader("Joins & Zuschauer", help=GLOSSARY["Viewer Count"])
-            visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=40)
+            total_visible_accounts_df = visible_account_snapshot(comment_df, event_detail_df, limit=None)
+            visible_accounts_df = total_visible_accounts_df.head(40).reset_index(drop=True)
             if viewer_state["viewer_count"] is not None:
                 st.metric("Aktuelle Zuschauerzahl", viewer_state["viewer_count"])
-                if viewer_state.get("total_viewer_count"):
-                    st.caption(f"Gesamt-Zuschauer im Eventstrom: {viewer_state['total_viewer_count']}")
+                raw_viewer = viewer_state.get("raw_viewer_count")
+                total_viewer = viewer_state.get("total_viewer_count")
+                if raw_viewer and total_viewer and raw_viewer != total_viewer:
+                    st.caption(f"TikTok meldet insgesamt {total_viewer} Zuschauer, davon {raw_viewer} direkt im Viewer-Event-Feld.")
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
+            if not total_visible_accounts_df.empty:
+                st.caption(
+                    f"Bisher sichtbar im Verlauf: {len(total_visible_accounts_df)} eindeutige Accounts. "
+                    "Das ist eine kumulierte Verlaufsliste und daher höher als die grüne Kurve mit aktiven Accounts pro Zeitfenster."
+                )
             if not visible_accounts_df.empty:
-                with st.expander(f"Sichtbare Accounts im Live ({len(visible_accounts_df)})", expanded=False):
-                    st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
+                expander_label = f"Zuletzt sichtbare Accounts im Live ({len(total_visible_accounts_df)})"
+                with st.expander(expander_label, expanded=False):
+                    if len(total_visible_accounts_df) > 40:
+                        st.caption(
+                            f"TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. "
+                            f"Hier siehst du die 40 zuletzt sichtbaren Accounts von insgesamt {len(total_visible_accounts_df)} sichtbaren Accounts aus Kommentaren und Live-Events."
+                        )
+                    else:
+                        st.caption("TikTokLive liefert keine verlässliche Voll-Liste aller stillen Zuschauer. Hier siehst du die zuletzt sichtbaren Accounts aus Kommentaren und Live-Events.")
                     for _, user_row in visible_accounts_df.iterrows():
                         u_cols = st.columns([0.2, 0.8])
                         with u_cols[0]:
@@ -5211,7 +5303,7 @@ def main():
             else:
                 st.caption("Noch keine sichtbaren Accounts im Eventstrom.")
             render_audience_timeline(viewer_df, height=220)
-            st.caption("Die grüne Linie zeigt sichtbar aktive Accounts im Zeitverlauf. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl, falls RoomUserSeqEvent verfügbar ist.")
+            st.caption("Die grüne Linie zeigt aktive Accounts pro Zeitfenster. Die blaue Linie zeigt die von TikTok gemeldete Zuschauerzahl. Wenn TikTok zwei Viewer-Felder liefert, bevorzugt die App die größere Gesamtzahl.")
             if not joiners_df.empty:
                 st.caption("Neue sichtbare Beitritte")
                 for _, join_row in joiners_df.head(5).iterrows():
@@ -5667,6 +5759,7 @@ def main():
             if not critical_df.empty:
                 chart_df = critical_df.copy()
                 render_critical_moment_dashboard(chart_df)
+                render_critical_moment_details(chart_df, comment_df, key_prefix="analysis_critical")
                 chart_show = chart_df.copy()
                 if "bucket" in chart_show.columns:
                     chart_show["bucket"] = pd.to_datetime(chart_show["bucket"]).dt.strftime("%H:%M")
