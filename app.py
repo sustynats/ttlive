@@ -882,13 +882,13 @@ def build_report_html(
             "Zuschauer- und User-Verlauf",
             alt.Chart(audience_df).mark_line(point=True).encode(
                 x=alt.X("bucket:T", title="Zeit"),
-                y=alt.Y("count:Q", title="Anzahl"),
+                y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f")),
                 color=alt.Color(
                     "series:N",
                     title="Reihe",
                     scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbar aktive User"], range=["#2563eb", "#16a34a"]),
                 ),
-                tooltip=["bucket:T", "series:N", "count:Q"],
+                tooltip=["bucket:T", "series:N", alt.Tooltip("count:Q", title="Anzahl", format=".0f")],
             ).properties(height=280),
             "chart_audience",
         ))
@@ -897,8 +897,14 @@ def build_report_html(
             "Viewer Dynamics",
             alt.Chart(viewer_df).mark_line(point=True).encode(
                 x=alt.X("bucket:T", title="Zeit"),
-                y=alt.Y("viewer_count:Q", title="Zuschauerzahl"),
-                tooltip=["bucket:T", "viewer_count:Q", "viewer_delta:Q", "lurker_ratio:Q", "conversion_rate:Q"],
+                y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f")),
+                tooltip=[
+                    "bucket:T",
+                    alt.Tooltip("viewer_count:Q", title="Zuschauerzahl", format=".0f"),
+                    alt.Tooltip("viewer_delta:Q", title="Veränderung", format="+.0f"),
+                    alt.Tooltip("lurker_ratio:Q", title="Lurker Ratio", format=".0%"),
+                    alt.Tooltip("conversion_rate:Q", title="Conversion", format=".1%"),
+                ],
             ).properties(height=260),
             "chart_viewer",
         ))
@@ -3104,7 +3110,7 @@ def render_viewer_dynamics(viewer_df: pd.DataFrame, height: int = 310):
     base = viewer_df.copy()
     line = alt.Chart(base).mark_line(point=True, color="#2563eb").encode(
         x=alt.X("bucket:T", title="Zeit"),
-        y=alt.Y("viewer_count:Q", title="Zuschauerzahl"),
+        y=alt.Y("viewer_count:Q", title="Zuschauerzahl", axis=alt.Axis(format=".0f")),
         tooltip=[
             alt.Tooltip("bucket:T", title="Zeit"),
             alt.Tooltip("viewer_count:Q", title="Zuschauer", format=".0f"),
@@ -3153,7 +3159,7 @@ def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
     plot_df = pd.concat(series_frames, ignore_index=True)
     chart = alt.Chart(plot_df).mark_line(point=True).encode(
         x=alt.X("bucket:T", title="Zeit"),
-        y=alt.Y("count:Q", title="Anzahl"),
+        y=alt.Y("count:Q", title="Anzahl", axis=alt.Axis(format=".0f")),
         color=alt.Color(
             "series:N",
             title="Reihe",
@@ -4335,26 +4341,30 @@ def maybe_run_auto_ai(comment_df: pd.DataFrame, scores_df: pd.DataFrame, cluster
 
 
 
-def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url: str | None = None, metadata: dict | None = None) -> None:
-    queue_obj.put({
+def queue_message(queue_obj, msg_type: str, username: str, text: str, avatar_url: str | None = None, metadata: dict | None = None, board_id: str | None = None) -> None:
+    payload = {
         "timestamp": now_ts(),
         "type": msg_type,
         "username": username,
         "text": text,
         "avatar_url": avatar_url,
         "metadata": metadata or {},
-    })
+    }
+    if board_id:
+        insert_message(board_id, payload)
+    if queue_obj is not None:
+        queue_obj.put(payload)
 
 
 
 def start_client(board_id: str, username: str, queue_obj):
     try:
-        queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...")
+        queue_message(queue_obj, "system", "SYSTEM", f"Verbinde zu {username} ...", board_id=board_id)
         client = TikTokLiveClient(unique_id=username)
 
         @client.on(ConnectEvent)
         async def on_connect(event):
-            queue_message(queue_obj, "system", "SYSTEM", f"Verbunden mit {username}")
+            queue_message(queue_obj, "system", "SYSTEM", f"Verbunden mit {username}", board_id=board_id)
 
         @client.on(CommentEvent)
         async def on_comment(event):
@@ -4362,11 +4372,11 @@ def start_client(board_id: str, username: str, queue_obj):
             nickname = user_meta.get("nickname") or user_meta.get("unique_id") or getattr(event.user, "unique_id", "Unbekannt")
             comment = getattr(event, "comment", "")
             avatar_url = user_meta.get("avatar_url")
-            queue_message(queue_obj, "comment", nickname, comment, avatar_url=avatar_url, metadata=user_meta)
+            queue_message(queue_obj, "comment", nickname, comment, avatar_url=avatar_url, metadata=user_meta, board_id=board_id)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
-            queue_message(queue_obj, "system", "SYSTEM", "Verbindung getrennt - Verlauf bleibt erhalten")
+            queue_message(queue_obj, "system", "SYSTEM", "Verbindung getrennt - Verlauf bleibt erhalten", board_id=board_id)
 
         if OPTIONAL_LIVE_EVENTS and LikeEvent is not None:
             @client.on(LikeEvent)
@@ -4377,14 +4387,14 @@ def start_client(board_id: str, username: str, queue_obj):
                 txt = f"{user} hat geliked"
                 if count is not None:
                     txt += f" ({count})"
-                queue_message(queue_obj, "like", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata)
+                queue_message(queue_obj, "like", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata, board_id=board_id)
 
         if OPTIONAL_LIVE_EVENTS and JoinEvent is not None:
             @client.on(JoinEvent)
             async def on_join(event):
                 metadata = event_metadata(event, "join")
                 user = metadata.get("nickname") or metadata.get("unique_id") or "Join"
-                queue_message(queue_obj, "join", user, f"{user} ist dem Live beigetreten", avatar_url=metadata.get("avatar_url"), metadata=metadata)
+                queue_message(queue_obj, "join", user, f"{user} ist dem Live beigetreten", avatar_url=metadata.get("avatar_url"), metadata=metadata, board_id=board_id)
 
         if OPTIONAL_LIVE_EVENTS and ShareEvent is not None:
             @client.on(ShareEvent)
@@ -4395,7 +4405,7 @@ def start_client(board_id: str, username: str, queue_obj):
                 txt = f"{user} hat das Live geteilt"
                 if count and count != 1:
                     txt += f" ({count})"
-                queue_message(queue_obj, "share", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata)
+                queue_message(queue_obj, "share", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata, board_id=board_id)
 
         if OPTIONAL_LIVE_EVENTS and GiftEvent is not None:
             @client.on(GiftEvent)
@@ -4412,7 +4422,7 @@ def start_client(board_id: str, username: str, queue_obj):
                     txt += f" x{gift_count}"
                 if diamonds:
                     txt += f" ({diamonds} Diamonds)"
-                queue_message(queue_obj, "gift", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata)
+                queue_message(queue_obj, "gift", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata, board_id=board_id)
 
         if RoomUserSeqEvent is not None:
             @client.on(RoomUserSeqEvent)
@@ -4423,50 +4433,50 @@ def start_client(board_id: str, username: str, queue_obj):
                 txt = f"Aktuelle Zuschauerzahl: {viewer_count}" if viewer_count else "Zuschauerzahl aktualisiert"
                 if total_count:
                     txt += f" (gesamt: {total_count})"
-                queue_message(queue_obj, "viewer_update", "SYSTEM", txt, metadata=metadata)
+                queue_message(queue_obj, "viewer_update", "SYSTEM", txt, metadata=metadata, board_id=board_id)
 
         if FollowEvent is not None:
             @client.on(FollowEvent)
             async def on_follow(event):
                 metadata = event_metadata(event, "follow")
                 user = metadata.get("nickname") or metadata.get("unique_id") or "Follow"
-                queue_message(queue_obj, "follow", user, f"{user} folgt jetzt", avatar_url=metadata.get("avatar_url"), metadata=metadata)
+                queue_message(queue_obj, "follow", user, f"{user} folgt jetzt", avatar_url=metadata.get("avatar_url"), metadata=metadata, board_id=board_id)
 
         if LiveEndEvent is not None:
             @client.on(LiveEndEvent)
             async def on_live_end(event):
-                queue_message(queue_obj, "live_end", "SYSTEM", "Live wurde beendet", metadata=event_metadata(event, "live_end"))
+                queue_message(queue_obj, "live_end", "SYSTEM", "Live wurde beendet", metadata=event_metadata(event, "live_end"), board_id=board_id)
 
         if LivePauseEvent is not None:
             @client.on(LivePauseEvent)
             async def on_live_pause(event):
-                queue_message(queue_obj, "live_pause", "SYSTEM", "Live wurde pausiert", metadata=event_metadata(event, "live_pause"))
+                queue_message(queue_obj, "live_pause", "SYSTEM", "Live wurde pausiert", metadata=event_metadata(event, "live_pause"), board_id=board_id)
 
         if PollEvent is not None:
             @client.on(PollEvent)
             async def on_poll(event):
-                queue_message(queue_obj, "poll", "SYSTEM", "Poll-Event erkannt", metadata=event_metadata(event, "poll"))
+                queue_message(queue_obj, "poll", "SYSTEM", "Poll-Event erkannt", metadata=event_metadata(event, "poll"), board_id=board_id)
 
         if RoomPinEvent is not None:
             @client.on(RoomPinEvent)
             async def on_room_pin(event):
-                queue_message(queue_obj, "room_pin", "SYSTEM", "Angepinnter Inhalt erkannt", metadata=event_metadata(event, "room_pin"))
+                queue_message(queue_obj, "room_pin", "SYSTEM", "Angepinnter Inhalt erkannt", metadata=event_metadata(event, "room_pin"), board_id=board_id)
 
         if CaptionEvent is not None:
             @client.on(CaptionEvent)
             async def on_caption(event):
                 metadata = event_metadata(event, "caption")
                 note = metadata.get("event_note") or "Caption-Event erkannt"
-                queue_message(queue_obj, "caption", "SYSTEM", note, metadata=metadata)
+                queue_message(queue_obj, "caption", "SYSTEM", note, metadata=metadata, board_id=board_id)
 
         if ImDeleteEvent is not None:
             @client.on(ImDeleteEvent)
             async def on_delete(event):
-                queue_message(queue_obj, "delete", "SYSTEM", "Nachricht wurde gelöscht", metadata=event_metadata(event, "delete"))
+                queue_message(queue_obj, "delete", "SYSTEM", "Nachricht wurde gelöscht", metadata=event_metadata(event, "delete"), board_id=board_id)
 
         client.run()
     except Exception as e:
-        queue_message(queue_obj, "error", "FEHLER", f"{type(e).__name__}: {e}")
+        queue_message(queue_obj, "error", "FEHLER", f"{type(e).__name__}: {e}", board_id=board_id)
 
 
 def init_state():
@@ -4492,6 +4502,7 @@ def init_state():
         "ai_error": "",
         "ai_max_output_tokens": AI_DEFAULT_MAX_OUTPUT_TOKENS,
         "selected_user_profile": "",
+        "live_username_input": "",
         "main_tab": "Lagebild",
         "last_query_tab": None,
         "auto_refresh_enabled": False,
@@ -4624,8 +4635,12 @@ def main():
         st.divider()
         st.header("2. TikTok-Live verbinden")
         st.caption("Gib den TikTok-Namen des laufenden Lives ein. Die App liest Kommentare ab diesem Zeitpunkt mit und schreibt sie in den aktiven Analyse-Raum.")
+        current_host = (get_board(board_id) or {}).get("host_username") if board_id else ""
+        if current_host and not st.session_state.get("live_username_input"):
+            st.session_state["live_username_input"] = str(current_host)
         username_input = st.text_input(
             "TikTok-Account des Lives",
+            key="live_username_input",
             placeholder="@username",
             help="Der Account muss gerade live sein. Der @-Name reicht aus.",
         )
@@ -4644,6 +4659,7 @@ def main():
                 if not board_id:
                     raise ValueError("Bitte zuerst einen Analyse-Raum erstellen oder öffnen.")
                 username = normalize_username(username_input)
+                st.session_state["live_username_input"] = username
                 board = get_board(board_id)
                 if not board:
                     raise ValueError("Analyse-Raum nicht gefunden.")
@@ -4714,9 +4730,7 @@ def main():
         st_autorefresh(interval=AUTO_REFRESH_MS, key="board_refresh")
 
     while not st.session_state.chat_queue.empty():
-        msg = st.session_state.chat_queue.get()
-        if isinstance(msg, dict) and board_id:
-            insert_message(board_id, msg)
+        st.session_state.chat_queue.get()
 
     board = get_board(board_id) if board_id else None
     messages = load_messages(board_id) if board_id else []
@@ -5027,11 +5041,6 @@ def main():
                     safe_username = html.escape(str(row["username"]))
                     safe_text = html.escape(str(row["text"]))
                     ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
-                    user_href = (
-                        f"?board={urllib.parse.quote(str(board_id))}"
-                        f"&tab={urllib.parse.quote('User-Insights')}"
-                        f"&user={urllib.parse.quote(str(row['username']))}"
-                    )
                     influence_info = influence_lookup.get(str(row["username"]), {})
                     influence_score = influence_info.get("influence_score")
                     if influence_score is not None:
@@ -5044,11 +5053,23 @@ def main():
                     with avatar_col:
                         render_avatar(str(row["username"]), row.get("avatar_url"), size=42)
                     with content_col:
+                        open_profile = st.button(
+                            str(row["username"]),
+                            key=f"open_user_insights_{row_idx}",
+                            type="tertiary",
+                            help="User-Insights für diesen Account öffnen",
+                        )
+                        if open_profile:
+                            st.session_state["selected_user_profile"] = str(row["username"])
+                            st.session_state["main_tab"] = "User-Insights"
+                            st.query_params["tab"] = "User-Insights"
+                            st.query_params["user"] = str(row["username"])
+                            st.rerun()
                         st.markdown(
                             f"""
                             <div class="chat-item {heat_class}">
                                 <div class="chat-main">
-                                    <a href="{user_href}" target="_self" style="color:{username_col}; font-weight:700; text-decoration:none;">{safe_username}</a>: {safe_text}
+                                    <span style="color:{username_col}; font-weight:700;">{safe_username}</span>: {safe_text}
                                 </div>
                                 <div style="margin-top:.25rem;">{badge_html}</div>
                                 <div class="chat-meta">{ts}</div>
@@ -5111,6 +5132,9 @@ def main():
                     with j_cols[1]:
                         if st.button(str(join_row["username"]), key=f"join_profile_{join_row.name}", help="Userprofil öffnen"):
                             st.session_state["selected_user_profile"] = str(join_row["username"])
+                            st.session_state["main_tab"] = "User-Insights"
+                            st.query_params["tab"] = "User-Insights"
+                            st.query_params["user"] = str(join_row["username"])
                             st.rerun()
             else:
                 st.caption("Noch keine Join-Events.")
