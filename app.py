@@ -3802,13 +3802,35 @@ def main():
             current_selected = st.session_state.get("selected_user_profile") or visible_users[0]
             if current_selected not in visible_users:
                 current_selected = visible_users[0]
+
+            if st.session_state.get("user_insights_selector") not in visible_users:
+                st.session_state["user_insights_selector"] = current_selected
+            elif st.session_state.get("selected_user_profile") in visible_users and st.session_state.get("user_insights_selector") != st.session_state.get("selected_user_profile"):
+                st.session_state["user_insights_selector"] = st.session_state["selected_user_profile"]
+
+            def sync_user_insights_selection():
+                st.session_state["selected_user_profile"] = st.session_state.get("user_insights_selector", current_selected)
+
+            def user_option_label(user: str) -> str:
+                info = influence_lookup.get(user, {})
+                score = info.get("influence_score")
+                label = info.get("influence_label")
+                if score is not None:
+                    return f"{user} · Influence {score} · {label}"
+                return user
+
+            st.markdown("**User auswählen**")
             selected_profile = st.selectbox(
                 "User auswählen",
                 visible_users,
-                index=visible_users.index(current_selected),
                 key="user_insights_selector",
+                format_func=user_option_label,
+                label_visibility="collapsed",
+                help="Wähle einen sichtbaren Account aus Kommentaren, Joins, Likes, Shares, Follows oder Gifts.",
+                on_change=sync_user_insights_selection,
             )
             st.session_state["selected_user_profile"] = selected_profile
+            st.caption(f"{len(visible_users)} sichtbare Accounts aus Kommentaren und Live-Events.")
             render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=False)
 
     with tab_events:
