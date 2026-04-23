@@ -3718,13 +3718,13 @@ def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df
         detail_tabs = st.tabs(["Nachrichten", "Events", "Profilwerte", "Öffentliches Profil"])
         with detail_tabs[0]:
             if not user_comments.empty:
-                msg_show = user_comments.sort_values("dt", ascending=False)[["timestamp", "tone", "is_question", "has_trigger", "has_toxic_marker", "text"]].head(100)
+                msg_show = user_comments.sort_values("dt", ascending=False)[["timestamp", "username", "tone", "is_question", "has_trigger", "has_toxic_marker", "text"]].head(100)
                 display_table(msg_show, height=360)
             else:
                 st.info("Keine Nachrichten dieses Users.")
         with detail_tabs[1]:
             if not user_events.empty:
-                event_cols = ["timestamp", "event_label", "text", "gift_name", "gift_count", "diamond_value", "like_count", "share_count", "join_count", "follow_count"]
+                event_cols = ["timestamp", "username", "event_label", "text", "gift_name", "gift_count", "diamond_value", "like_count", "share_count", "join_count", "follow_count"]
                 display_table(user_events[[c for c in event_cols if c in user_events.columns]].sort_values("timestamp", ascending=False).head(100), height=360)
             else:
                 st.info("Keine Events dieses Users.")
@@ -5067,10 +5067,6 @@ def main():
 
         with right:
             st.markdown('<div class="sticky-panel">', unsafe_allow_html=True)
-            selected_profile = st.session_state.get("selected_user_profile", "")
-            if selected_profile:
-                with st.expander(f"Userprofil: {selected_profile}", expanded=True):
-                    render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=True)
             st.subheader("Live-Lage")
             st.markdown(
                 f"""
