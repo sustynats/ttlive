@@ -22,12 +22,21 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
+import TikTokLive.events as live_events
 try:
     from TikTokLive.events import LikeEvent, GiftEvent, JoinEvent, ShareEvent
     OPTIONAL_LIVE_EVENTS = True
 except Exception:
     LikeEvent = GiftEvent = JoinEvent = ShareEvent = None
     OPTIONAL_LIVE_EVENTS = False
+RoomUserSeqEvent = getattr(live_events, "RoomUserSeqEvent", None)
+FollowEvent = getattr(live_events, "FollowEvent", None)
+PollEvent = getattr(live_events, "PollEvent", None)
+RoomPinEvent = getattr(live_events, "RoomPinEvent", None)
+LiveEndEvent = getattr(live_events, "LiveEndEvent", None)
+LivePauseEvent = getattr(live_events, "LivePauseEvent", None)
+CaptionEvent = getattr(live_events, "CaptionEvent", None)
+ImDeleteEvent = getattr(live_events, "ImDeleteEvent", None)
 
 SKLEARN_AVAILABLE = True
 try:
@@ -110,6 +119,9 @@ GLOSSARY = {
     "Aktivierungs-Funnel": "Zeigt, wie viele Accounts nur beitreten, kommentieren, liken, teilen oder schenken. Daraus wird sichtbar, ob Aufmerksamkeit in echte Beteiligung übergeht.",
     "Supporter-Matrix": "Vergleicht pro Account Kommentar-, Like-, Share- und Gift-Aktivität. Sie hilft, aktive Unterstützer, stille Zuschauer und potenzielle VIPs zu erkennen.",
     "VIP-Signal": "Heuristische Kennzeichnung für Accounts, die überdurchschnittlich viele Unterstützungsaktionen zeigen, z. B. Gifts, Shares oder wiederholte Likes.",
+    "Viewer Count": "Aktuelle Zuschauerzahl aus RoomUserSeqEvent, sofern TikTokLive diese Information liefert. Das ist ein Zählwert, keine vollständige Liste aller Zuschauer.",
+    "User-Insights": "Detailansicht eines sichtbaren Accounts aus Kommentaren oder Events. Sie kombiniert Nachrichten, Events, Interaktionen, Rollen, Support-Signale und Profilbild, soweit verfügbar.",
+    "Influence-Score": "Kombinierter Orientierungswert pro User aus Chat-Aktivität, Shift-Score, @-Interaktionen, empfangener Aufmerksamkeit, Support-Signalen und Live-Events. Hoher Wert bedeutet sichtbaren Einfluss, nicht automatisch problematisches Verhalten.",
 }
 
 COLUMN_MAPPING = {
@@ -190,6 +202,16 @@ COLUMN_MAPPING = {
     "support_score": "Support-Score",
     "vip_signal": "VIP-Signal",
     "metadata": "Metadaten",
+    "viewer_count": "Zuschauerzahl",
+    "total_viewer_count": "Gesamt-Zuschauer",
+    "follow_count": "Follows",
+    "follows": "Follows",
+    "comment_count": "Kommentare",
+    "last_event": "Letztes Event",
+    "interaction": "Interaktion",
+    "influence_score": "Influence-Score",
+    "influence_label": "Influence",
+    "influence_reason": "Influence-Begründung",
 }
 
 
@@ -508,6 +530,10 @@ def live_user_metadata(user_obj) -> dict:
         "is_moderator": bool(first_attr(user_obj, ["is_moderator", "isModerator", "moderator"], False)),
         "is_subscriber": bool(first_attr(user_obj, ["is_subscriber", "isSubscriber", "subscriber"], False)),
         "is_following": bool(first_attr(user_obj, ["is_following", "isFollowing", "follow_status"], False)),
+        "follower_count": safe_int(first_attr(user_obj, ["follower_count", "followerCount", "followers", "fans"], None), 0),
+        "following_count": safe_int(first_attr(user_obj, ["following_count", "followingCount", "followings"], None), 0),
+        "verified": bool(first_attr(user_obj, ["verified", "is_verified", "isVerified"], False)),
+        "bio": first_attr(user_obj, ["bio", "signature", "description"], None),
     }
     return {k: v for k, v in data.items() if v not in (None, "", False)}
 
@@ -546,6 +572,15 @@ def event_metadata(event, event_type: str) -> dict:
             "diamond_value": gift_count * diamond_count if diamond_count else 0,
             "gift_icon_url": safe_media_url(icon),
         })
+    elif event_type == "viewer_update":
+        data.update({
+            "viewer_count": safe_int(first_attr(event, ["viewer_count", "viewerCount", "user_count", "userCount", "online_user_count", "onlineUserCount", "total_user_count", "totalUserCount"]), 0),
+            "total_viewer_count": safe_int(first_attr(event, ["total_viewer_count", "totalViewerCount", "total_user_count", "totalUserCount", "total"]), 0),
+        })
+    elif event_type == "follow":
+        data["follow_count"] = safe_int(first_attr(event, ["count", "follow_count", "followCount"], 1), 1)
+    elif event_type in {"live_end", "live_pause", "poll", "room_pin", "caption", "delete"}:
+        data["event_note"] = str(first_attr(event, ["text", "content", "message", "caption"], "") or "")
 
     return {k: v for k, v in data.items() if v not in (None, "")}
 
@@ -620,7 +655,8 @@ def build_event_dataframe(messages) -> pd.DataFrame:
         "timestamp", "dt", "minute", "event_type", "event_label", "username", "text",
         "avatar_url", "user_id", "unique_id", "gift_name", "gift_count", "diamond_value",
         "like_count", "share_count", "join_count", "is_moderator", "is_subscriber",
-        "is_following", "metadata",
+        "is_following", "follower_count", "following_count", "verified", "bio",
+        "viewer_count", "total_viewer_count", "follow_count", "metadata",
     ]
     if not event_messages:
         return pd.DataFrame(columns=columns)
@@ -637,6 +673,14 @@ def build_event_dataframe(messages) -> pd.DataFrame:
                 "join": "Beitritt",
                 "share": "Share",
                 "gift": "Gift",
+                "follow": "Follow",
+                "viewer_update": "Viewer Count",
+                "live_end": "Live-Ende",
+                "live_pause": "Live-Pause",
+                "poll": "Poll",
+                "room_pin": "Pinned",
+                "caption": "Caption",
+                "delete": "Gelöscht",
             }.get(event_type, event_type),
             "username": row.get("username"),
             "text": row.get("text"),
@@ -649,9 +693,16 @@ def build_event_dataframe(messages) -> pd.DataFrame:
             "like_count": safe_int(metadata.get("like_count"), 1 if event_type == "like" else 0),
             "share_count": safe_int(metadata.get("share_count"), 1 if event_type == "share" else 0),
             "join_count": safe_int(metadata.get("join_count"), 1 if event_type == "join" else 0),
+            "viewer_count": safe_int(metadata.get("viewer_count"), 0),
+            "total_viewer_count": safe_int(metadata.get("total_viewer_count"), 0),
+            "follow_count": safe_int(metadata.get("follow_count"), 1 if event_type == "follow" else 0),
             "is_moderator": bool(metadata.get("is_moderator", False)),
             "is_subscriber": bool(metadata.get("is_subscriber", False)),
             "is_following": bool(metadata.get("is_following", False)),
+            "follower_count": safe_int(metadata.get("follower_count"), 0),
+            "following_count": safe_int(metadata.get("following_count"), 0),
+            "verified": bool(metadata.get("verified", False)),
+            "bio": metadata.get("bio"),
             "metadata": metadata,
         })
 
@@ -1203,7 +1254,7 @@ def live_event_metrics(event_df: pd.DataFrame) -> dict:
     if event_df.empty:
         return {
             "events": 0, "joins": 0, "likes": 0, "shares": 0, "gifts": 0,
-            "diamonds": 0, "gifters": 0, "sharers": 0, "likers": 0,
+            "diamonds": 0, "gifters": 0, "sharers": 0, "likers": 0, "follows": 0,
         }
     return {
         "events": int(len(event_df)),
@@ -1212,6 +1263,7 @@ def live_event_metrics(event_df: pd.DataFrame) -> dict:
         "shares": int(event_df["share_count"].sum()),
         "gifts": int(event_df["gift_count"].sum()),
         "diamonds": int(event_df["diamond_value"].sum()),
+        "follows": int(event_df["follow_count"].sum()),
         "gifters": int(event_df.loc[event_df["event_type"] == "gift", "username"].nunique()),
         "sharers": int(event_df.loc[event_df["event_type"] == "share", "username"].nunique()),
         "likers": int(event_df.loc[event_df["event_type"] == "like", "username"].nunique()),
@@ -1234,6 +1286,10 @@ def event_timeline(event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame
             value = int(group["join_count"].sum())
         elif event_type == "gift":
             value = int(group["gift_count"].sum())
+        elif event_type == "follow":
+            value = int(group["follow_count"].sum())
+        elif event_type == "viewer_update":
+            value = int(group["viewer_count"].max())
         rows.append({
             "bucket": bucket_val,
             "event_type": event_type,
@@ -1291,6 +1347,7 @@ def activation_funnel(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Da
         ("Beigetreten", "join"),
         ("Kommentiert", "comment"),
         ("Geliked", "like"),
+        ("Gefolgt", "follow"),
         ("Geteilt", "share"),
         ("Geschenkt", "gift"),
     ]:
@@ -1310,6 +1367,7 @@ def supporter_matrix(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Dat
     users = set(comment_df["username"].dropna().astype(str).tolist()) if not comment_df.empty else set()
     if not event_df.empty:
         users |= set(event_df["username"].dropna().astype(str).tolist())
+    users = {u for u in users if u not in {"SYSTEM", "FEHLER", ""}}
     if not users:
         return pd.DataFrame(columns=["username", "comments", "likes", "shares", "joins", "gifts", "diamond_value", "support_score", "vip_signal"])
 
@@ -1321,13 +1379,16 @@ def supporter_matrix(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Dat
         likes = int(user_events["like_count"].sum()) if not user_events.empty else 0
         shares = int(user_events["share_count"].sum()) if not user_events.empty else 0
         joins = int(user_events["join_count"].sum()) if not user_events.empty else 0
+        follows = int(user_events["follow_count"].sum()) if not user_events.empty else 0
         gifts = int(user_events["gift_count"].sum()) if not user_events.empty else 0
         diamonds = int(user_events["diamond_value"].sum()) if not user_events.empty else 0
-        support_score = round(comments * 1.0 + min(likes, 200) * 0.05 + shares * 4.0 + gifts * 8.0 + min(diamonds, 2000) * 0.03, 1)
+        support_score = round(comments * 1.0 + min(likes, 200) * 0.05 + shares * 4.0 + follows * 6.0 + gifts * 8.0 + min(diamonds, 2000) * 0.03, 1)
         if gifts > 0 or diamonds >= 100:
             vip_signal = "Gifter / VIP"
         elif shares >= 2:
             vip_signal = "Verteiler"
+        elif follows:
+            vip_signal = "Follower"
         elif likes >= 20 and comments >= 2:
             vip_signal = "Resonanzgeber"
         elif comments >= 10:
@@ -1342,6 +1403,7 @@ def supporter_matrix(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Dat
             "likes": likes,
             "shares": shares,
             "joins": joins,
+            "follows": follows,
             "gifts": gifts,
             "diamond_value": diamonds,
             "support_score": support_score,
@@ -1359,6 +1421,7 @@ def engagement_matrix_long(support_df: pd.DataFrame) -> pd.DataFrame:
         "comments": "Kommentare",
         "likes": "Likes",
         "shares": "Shares",
+        "follows": "Follows",
         "gifts": "Gifts",
         "diamond_value": "Diamonds",
     }
@@ -1366,6 +1429,83 @@ def engagement_matrix_long(support_df: pd.DataFrame) -> pd.DataFrame:
         for col, label in metric_map.items():
             rows.append({"username": row["username"], "metric": label, "value": float(row.get(col, 0) or 0)})
     return pd.DataFrame(rows)
+
+
+def influence_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, influencer_df: pd.DataFrame, support_df: pd.DataFrame) -> pd.DataFrame:
+    users = set()
+    if comment_df is not None and not comment_df.empty:
+        users |= set(comment_df["username"].dropna().astype(str).tolist())
+    if scores_df is not None and not scores_df.empty:
+        users |= set(scores_df["username"].dropna().astype(str).tolist())
+    if influencer_df is not None and not influencer_df.empty:
+        users |= set(influencer_df["user"].dropna().astype(str).tolist())
+    if support_df is not None and not support_df.empty:
+        users |= set(support_df["username"].dropna().astype(str).tolist())
+    users = {u for u in users if u not in {"SYSTEM", "FEHLER", ""}}
+    if not users:
+        return pd.DataFrame(columns=["username", "influence_score", "influence_label", "influence_reason"])
+
+    total_comments = max(len(comment_df), 1) if comment_df is not None and not comment_df.empty else 1
+    score_lookup = scores_df.set_index("username").to_dict("index") if scores_df is not None and not scores_df.empty else {}
+    support_lookup = support_df.set_index("username").to_dict("index") if support_df is not None and not support_df.empty else {}
+    influence_lookup = influencer_df.set_index("user").to_dict("index") if influencer_df is not None and not influencer_df.empty else {}
+    comment_counts = comment_df.groupby("username").size().to_dict() if comment_df is not None and not comment_df.empty else {}
+    max_support = max([float(row.get("support_score", 0) or 0) for row in support_lookup.values()] + [1.0])
+    max_received = max([float(row.get("received_mentions", 0) or 0) for row in influence_lookup.values()] + [1.0])
+    max_sent = max([float(row.get("sent_mentions", 0) or 0) for row in influence_lookup.values()] + [1.0])
+
+    rows = []
+    for username in sorted(users):
+        score_info = score_lookup.get(username, {})
+        support_info = support_lookup.get(username, {})
+        relation_info = influence_lookup.get(username, {})
+        message_share = min(float(comment_counts.get(username, 0)) / total_comments, 1.0)
+        shift_norm = min(float(score_info.get("shift_score", 0) or 0) / 100.0, 1.0)
+        support_norm = min(float(support_info.get("support_score", 0) or 0) / max_support, 1.0)
+        received_norm = min(float(relation_info.get("received_mentions", 0) or 0) / max_received, 1.0)
+        sent_norm = min(float(relation_info.get("sent_mentions", 0) or 0) / max_sent, 1.0)
+        gift_bonus = 0.08 if float(support_info.get("gifts", 0) or 0) > 0 else 0.0
+        share_bonus = 0.05 if float(support_info.get("shares", 0) or 0) > 0 else 0.0
+        score = round(100 * min(
+            0.25 * shift_norm +
+            0.20 * message_share +
+            0.20 * received_norm +
+            0.15 * sent_norm +
+            0.15 * support_norm +
+            gift_bonus +
+            share_bonus,
+            1.0,
+        ), 1)
+        if score >= 75:
+            label = "sehr hoch"
+        elif score >= 55:
+            label = "hoch"
+        elif score >= 35:
+            label = "mittel"
+        elif score >= 15:
+            label = "niedrig"
+        else:
+            label = "gering"
+        reasons = []
+        if shift_norm >= 0.45:
+            reasons.append("prägt Chatmuster")
+        if received_norm >= 0.4:
+            reasons.append("wird adressiert")
+        if sent_norm >= 0.4:
+            reasons.append("adressiert andere")
+        if support_norm >= 0.45:
+            reasons.append("Support-Signal")
+        if gift_bonus:
+            reasons.append("Gifts")
+        if not reasons and message_share > 0:
+            reasons.append("sichtbare Aktivität")
+        rows.append({
+            "username": username,
+            "influence_score": score,
+            "influence_label": label,
+            "influence_reason": ", ".join(reasons) if reasons else "kaum sichtbare Signale",
+        })
+    return pd.DataFrame(rows).sort_values("influence_score", ascending=False).reset_index(drop=True)
 
 
 def recent_window_metrics(comment_df: pd.DataFrame, minutes: int = 5) -> dict:
@@ -1883,8 +2023,8 @@ def render_event_timeline(event_timeline_df: pd.DataFrame, height: int = 280):
             "event_type:N",
             title="Event",
             scale=alt.Scale(
-                domain=["join", "like", "share", "gift"],
-                range=["#60a5fa", "#22c55e", "#f59e0b", "#ef4444"],
+                domain=["join", "like", "follow", "share", "gift", "viewer_update"],
+                range=["#60a5fa", "#22c55e", "#14b8a6", "#f59e0b", "#ef4444", "#64748b"],
             ),
         ),
         tooltip=[
@@ -1979,6 +2119,249 @@ def render_supporter_scatter(support_df: pd.DataFrame, height: int = 300):
         ],
     ).properties(height=height)
     st.altair_chart(chart, use_container_width=True)
+
+
+def user_avatar_url(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame) -> str | None:
+    for df in [comment_df, event_df]:
+        if df is None or df.empty or "username" not in df.columns or "avatar_url" not in df.columns:
+            continue
+        rows = df[(df["username"] == username) & df["avatar_url"].notna()]
+        if not rows.empty:
+            url = str(rows.sort_values("dt", ascending=False).iloc[0]["avatar_url"])
+            if url.startswith("http"):
+                return url
+    return None
+
+
+def user_live_profile_metadata(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame) -> dict:
+    merged = {}
+    for df in [comment_df, event_df]:
+        if df is None or df.empty or "username" not in df.columns:
+            continue
+        rows = df[df["username"] == username].sort_values("dt", ascending=False)
+        for _, row in rows.iterrows():
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            for key in [
+                "user_id", "unique_id", "nickname", "avatar_url", "is_moderator",
+                "is_subscriber", "is_following", "follower_count", "following_count",
+                "verified", "bio",
+            ]:
+                value = metadata.get(key) if key in metadata else row.get(key)
+                if value not in (None, "", 0, False) and key not in merged:
+                    merged[key] = value
+    if "unique_id" in merged:
+        merged["profile_url"] = f"https://www.tiktok.com/@{str(merged['unique_id']).lstrip('@')}"
+    return merged
+
+
+def all_visible_users(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> list[str]:
+    users = set()
+    if comment_df is not None and not comment_df.empty:
+        users |= set(comment_df["username"].dropna().astype(str).tolist())
+    if event_df is not None and not event_df.empty:
+        users |= set(event_df["username"].dropna().astype(str).tolist())
+    return sorted(u for u in users if u not in {"SYSTEM", "FEHLER", ""})
+
+
+def latest_viewer_count(event_df: pd.DataFrame) -> dict:
+    if event_df is None or event_df.empty:
+        return {"viewer_count": None, "total_viewer_count": None, "timestamp": None}
+    viewer_rows = event_df[(event_df["event_type"] == "viewer_update") & (event_df["viewer_count"] > 0)].copy()
+    if viewer_rows.empty:
+        return {"viewer_count": None, "total_viewer_count": None, "timestamp": None}
+    row = viewer_rows.sort_values("dt", ascending=False).iloc[0]
+    return {
+        "viewer_count": safe_int(row.get("viewer_count"), 0),
+        "total_viewer_count": safe_int(row.get("total_viewer_count"), 0),
+        "timestamp": row.get("timestamp"),
+    }
+
+
+def recent_joiners(event_df: pd.DataFrame, limit: int = 8) -> pd.DataFrame:
+    if event_df is None or event_df.empty:
+        return pd.DataFrame(columns=["timestamp", "username", "avatar_url"])
+    joins = event_df[event_df["event_type"] == "join"].copy()
+    if joins.empty:
+        return pd.DataFrame(columns=["timestamp", "username", "avatar_url"])
+    return joins.sort_values("dt", ascending=False).head(limit)[["timestamp", "username", "avatar_url"]]
+
+
+def user_interaction_edges(username: str, comment_df: pd.DataFrame) -> pd.DataFrame:
+    if not username or comment_df is None or comment_df.empty:
+        return pd.DataFrame(columns=["source", "target", "count", "interaction"])
+    edges = mention_edges(comment_df)
+    if edges.empty:
+        return pd.DataFrame(columns=["source", "target", "count", "interaction"])
+    out = edges[(edges["source"] == username) | (edges["target"] == username)].copy()
+    if out.empty:
+        return pd.DataFrame(columns=["source", "target", "count", "interaction"])
+    out["interaction"] = out.apply(
+        lambda row: "spricht an" if row["source"] == username else "wird angesprochen von",
+        axis=1,
+    )
+    return out.sort_values("count", ascending=False)
+
+
+def user_activity_timeline(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if comment_df is not None and not comment_df.empty:
+        for _, row in comment_df[comment_df["username"] == username].iterrows():
+            rows.append({
+                "timestamp": row["timestamp"],
+                "dt": row["dt"],
+                "event_type": "comment",
+                "event_label": "Kommentar",
+                "text": row["text"],
+                "value": 1,
+            })
+    if event_df is not None and not event_df.empty:
+        for _, row in event_df[event_df["username"] == username].iterrows():
+            value = 1
+            if row["event_type"] == "like":
+                value = safe_int(row.get("like_count"), 1)
+            elif row["event_type"] == "share":
+                value = safe_int(row.get("share_count"), 1)
+            elif row["event_type"] == "gift":
+                value = safe_int(row.get("gift_count"), 1)
+            elif row["event_type"] == "follow":
+                value = safe_int(row.get("follow_count"), 1)
+            rows.append({
+                "timestamp": row["timestamp"],
+                "dt": row["dt"],
+                "event_type": row["event_type"],
+                "event_label": row["event_label"],
+                "text": row["text"],
+                "value": value,
+            })
+    if not rows:
+        return pd.DataFrame(columns=["timestamp", "dt", "event_type", "event_label", "text", "value"])
+    return pd.DataFrame(rows).sort_values("dt", ascending=False)
+
+
+def render_user_profile_detail(username: str, comment_df: pd.DataFrame, event_df: pd.DataFrame, scores_df: pd.DataFrame, support_df: pd.DataFrame, influencer_df: pd.DataFrame, influence_df: pd.DataFrame | None = None, compact: bool = False):
+    if not username:
+        st.info("Wähle einen User aus.")
+        return
+
+    avatar = user_avatar_url(username, comment_df, event_df)
+    profile_meta = user_live_profile_metadata(username, comment_df, event_df)
+    activity = user_activity_timeline(username, comment_df, event_df)
+    user_comments = comment_df[comment_df["username"] == username].copy() if comment_df is not None and not comment_df.empty else pd.DataFrame()
+    user_events = event_df[event_df["username"] == username].copy() if event_df is not None and not event_df.empty else pd.DataFrame()
+    score_row = scores_df[scores_df["username"] == username].head(1) if scores_df is not None and not scores_df.empty else pd.DataFrame()
+    support_row = support_df[support_df["username"] == username].head(1) if support_df is not None and not support_df.empty else pd.DataFrame()
+    influence_row = influence_df[influence_df["username"] == username].head(1) if influence_df is not None and not influence_df.empty else pd.DataFrame()
+    interaction_df = user_interaction_edges(username, comment_df)
+
+    header_cols = st.columns([0.13, 0.87])
+    with header_cols[0]:
+        if avatar:
+            st.image(avatar, width=72)
+        else:
+            st.markdown(
+                f'<div class="avatar-fallback" style="background:{user_color(username)}; width:72px; height:72px; font-size:1.1rem;">{initials(username)}</div>',
+                unsafe_allow_html=True,
+            )
+    with header_cols[1]:
+        st.subheader(username)
+        meta_bits = []
+        if not score_row.empty:
+            meta_bits.append(f"Rolle: {score_row.iloc[0].get('role', '-')}")
+            meta_bits.append(f"Shift-Score: {score_row.iloc[0].get('shift_score', 0)}")
+        if not support_row.empty:
+            meta_bits.append(f"VIP-Signal: {support_row.iloc[0].get('vip_signal', '-')}")
+        if not influence_row.empty:
+            meta_bits.append(f"Influence: {influence_row.iloc[0].get('influence_score', 0)}")
+        if profile_meta.get("verified"):
+            meta_bits.append("verifiziert")
+        st.caption(" | ".join(meta_bits) if meta_bits else "Sichtbarer Account aus Kommentaren oder Live-Events.")
+
+    m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+    m1.metric("Nachrichten", len(user_comments))
+    m2.metric("Events", len(user_events))
+    m3.metric("Likes", int(user_events["like_count"].sum()) if not user_events.empty else 0)
+    m4.metric("Shares", int(user_events["share_count"].sum()) if not user_events.empty else 0)
+    m5.metric("Gifts", int(user_events["gift_count"].sum()) if not user_events.empty else 0)
+    m6.metric("Diamonds", int(user_events["diamond_value"].sum()) if not user_events.empty else 0)
+    if not influence_row.empty:
+        m7.metric("Influence", influence_row.iloc[0].get("influence_score", 0), help=GLOSSARY["Influence-Score"])
+    else:
+        m7.metric("Influence", "-")
+    if not influence_row.empty:
+        st.caption(f"Influence-Begründung: {influence_row.iloc[0].get('influence_reason', '-')}")
+
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Follower", profile_meta.get("follower_count", "-"))
+    p2.metric("Following", profile_meta.get("following_count", "-"))
+    p3.metric("Moderator", "ja" if profile_meta.get("is_moderator") else "nein")
+    p4.metric("Subscriber", "ja" if profile_meta.get("is_subscriber") else "nein")
+    if profile_meta.get("profile_url"):
+        st.link_button("TikTok-Profil öffnen", profile_meta["profile_url"], use_container_width=True)
+    if not profile_meta.get("follower_count"):
+        st.caption("Followerzahlen werden nur angezeigt, wenn sie im Live-Eventstrom enthalten sind. TikTokLive liefert sie nicht zuverlässig für jeden Account.")
+
+    if not compact:
+        left, right = st.columns([1.1, 1])
+        with left:
+            st.subheader("Aktivitätsverlauf")
+            if not activity.empty:
+                timeline = activity.copy()
+                timeline["minute"] = pd.to_datetime(timeline["dt"], errors="coerce").dt.floor("min")
+                plot_df = timeline.groupby(["minute", "event_type"])["value"].sum().reset_index()
+                st.altair_chart(
+                    alt.Chart(plot_df).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                        x=alt.X("minute:T", title="Zeit"),
+                        y=alt.Y("value:Q", title="Aktivität", stack=True),
+                        color=alt.Color("event_type:N", title="Typ"),
+                        tooltip=["minute:T", "event_type:N", "value:Q"],
+                    ).properties(height=250),
+                    use_container_width=True,
+                )
+            else:
+                st.info("Keine Aktivitäten gefunden.")
+        with right:
+            st.subheader("Interaktionen")
+            if not interaction_df.empty:
+                render_relationship_network(interaction_df, influencer_df, height=250)
+                display_table(interaction_df.head(20), height=190)
+            else:
+                st.info("Keine @-Interaktionen mit diesem User erkannt.")
+
+        detail_tabs = st.tabs(["Nachrichten", "Events", "Profilwerte", "Öffentliches Profil"])
+        with detail_tabs[0]:
+            if not user_comments.empty:
+                msg_show = user_comments.sort_values("dt", ascending=False)[["timestamp", "tone", "is_question", "has_trigger", "has_toxic_marker", "text"]].head(100)
+                display_table(msg_show, height=360)
+            else:
+                st.info("Keine Nachrichten dieses Users.")
+        with detail_tabs[1]:
+            if not user_events.empty:
+                event_cols = ["timestamp", "event_label", "text", "gift_name", "gift_count", "diamond_value", "like_count", "share_count", "join_count", "follow_count"]
+                display_table(user_events[[c for c in event_cols if c in user_events.columns]].sort_values("timestamp", ascending=False).head(100), height=360)
+            else:
+                st.info("Keine Events dieses Users.")
+        with detail_tabs[2]:
+            rows = []
+            if not score_row.empty:
+                rows.extend(score_row.to_dict("records"))
+            if not support_row.empty:
+                rows.extend(support_row.to_dict("records"))
+            if not influence_row.empty:
+                rows.extend(influence_row.to_dict("records"))
+            if rows:
+                display_table(pd.DataFrame(rows), height=220)
+            else:
+                st.info("Noch keine Profilwerte verfügbar.")
+        with detail_tabs[3]:
+            if profile_meta:
+                profile_rows = [{"Feld": key, "Wert": value} for key, value in profile_meta.items()]
+                display_table(pd.DataFrame(profile_rows), height=280)
+            else:
+                st.info("Keine zusätzlichen Profilmetadaten im Live-Eventstrom gefunden.")
+            st.caption("Optionales Scraping über TikTokApi/Browser wäre möglich, ist aber inoffiziell, instabiler und nicht als verlässliche Production-API einzuplanen.")
+    else:
+        if not activity.empty:
+            display_table(activity[["timestamp", "event_label", "text"]].head(8), height=230)
 
 
 def user_detail_snapshot(comment_df: pd.DataFrame, username: str) -> dict:
@@ -2617,6 +3000,56 @@ def start_client(board_id: str, username: str, queue_obj):
                     txt += f" ({diamonds} Diamonds)"
                 queue_message(queue_obj, "gift", user, txt, avatar_url=metadata.get("avatar_url"), metadata=metadata)
 
+        if RoomUserSeqEvent is not None:
+            @client.on(RoomUserSeqEvent)
+            async def on_viewer_count(event):
+                metadata = event_metadata(event, "viewer_update")
+                viewer_count = safe_int(metadata.get("viewer_count"), 0)
+                total_count = safe_int(metadata.get("total_viewer_count"), 0)
+                txt = f"Aktuelle Zuschauerzahl: {viewer_count}" if viewer_count else "Zuschauerzahl aktualisiert"
+                if total_count:
+                    txt += f" (gesamt: {total_count})"
+                queue_message(queue_obj, "viewer_update", "SYSTEM", txt, metadata=metadata)
+
+        if FollowEvent is not None:
+            @client.on(FollowEvent)
+            async def on_follow(event):
+                metadata = event_metadata(event, "follow")
+                user = metadata.get("nickname") or metadata.get("unique_id") or "Follow"
+                queue_message(queue_obj, "follow", user, f"{user} folgt jetzt", avatar_url=metadata.get("avatar_url"), metadata=metadata)
+
+        if LiveEndEvent is not None:
+            @client.on(LiveEndEvent)
+            async def on_live_end(event):
+                queue_message(queue_obj, "live_end", "SYSTEM", "Live wurde beendet", metadata=event_metadata(event, "live_end"))
+
+        if LivePauseEvent is not None:
+            @client.on(LivePauseEvent)
+            async def on_live_pause(event):
+                queue_message(queue_obj, "live_pause", "SYSTEM", "Live wurde pausiert", metadata=event_metadata(event, "live_pause"))
+
+        if PollEvent is not None:
+            @client.on(PollEvent)
+            async def on_poll(event):
+                queue_message(queue_obj, "poll", "SYSTEM", "Poll-Event erkannt", metadata=event_metadata(event, "poll"))
+
+        if RoomPinEvent is not None:
+            @client.on(RoomPinEvent)
+            async def on_room_pin(event):
+                queue_message(queue_obj, "room_pin", "SYSTEM", "Angepinnter Inhalt erkannt", metadata=event_metadata(event, "room_pin"))
+
+        if CaptionEvent is not None:
+            @client.on(CaptionEvent)
+            async def on_caption(event):
+                metadata = event_metadata(event, "caption")
+                note = metadata.get("event_note") or "Caption-Event erkannt"
+                queue_message(queue_obj, "caption", "SYSTEM", note, metadata=metadata)
+
+        if ImDeleteEvent is not None:
+            @client.on(ImDeleteEvent)
+            async def on_delete(event):
+                queue_message(queue_obj, "delete", "SYSTEM", "Nachricht wurde gelöscht", metadata=event_metadata(event, "delete"))
+
         client.run()
     except Exception as e:
         queue_message(queue_obj, "error", "FEHLER", f"{type(e).__name__}: {e}")
@@ -2644,6 +3077,7 @@ def init_state():
         "ai_connection_status": "",
         "ai_error": "",
         "ai_max_output_tokens": AI_DEFAULT_MAX_OUTPUT_TOKENS,
+        "selected_user_profile": "",
         "auto_refresh_enabled": False,
         "auto_refresh_toggle": False,
     }
@@ -2891,6 +3325,8 @@ def main():
     gift_types_df = gift_type_matrix(event_detail_df)
     funnel_df = activation_funnel(comment_df, event_detail_df)
     support_df = supporter_matrix(comment_df, event_detail_df)
+    viewer_state = latest_viewer_count(event_detail_df)
+    joiners_df = recent_joiners(event_detail_df)
     repeat_df_global = repeated_messages(comment_df, min_count=2)
     live_ampel = compute_live_ampel(comment_df, scores_df, impact)
     alerts = compute_alerts(comment_df, scores_df, impact)
@@ -2903,6 +3339,7 @@ def main():
     trigger_df = trigger_effect_analysis(comment_df)
     archetype_df = user_archetypes(comment_df, scores_df)
     attention_df = attention_vs_substance(comment_df)
+    influence_df = influence_scores(comment_df, scores_df, influencer_df, support_df)
     phase_label = phase_of_live(comment_df)
     report_text = board.get("report_text", "") if board else ""
 
@@ -2923,10 +3360,17 @@ def main():
     k5.metric("Abwertend", summary["toxic_msgs"], help=GLOBAL_TOOLTIPS["toxisch"])
     k6.metric("Laufzeit", elapsed_label(started_at))
 
-    meta1, meta2, meta3 = st.columns(3)
+    meta1, meta2, meta3, meta4 = st.columns(4)
     meta1.info(f"Board: {board_id}")
     meta2.info(f"Host: {host or '-'}")
     meta3.info(f"Status: {board['status'] if board else '-'}")
+    if viewer_state["viewer_count"] is not None:
+        viewer_label = f"{viewer_state['viewer_count']}"
+        if viewer_state.get("total_viewer_count"):
+            viewer_label += f" / gesamt {viewer_state['total_viewer_count']}"
+        meta4.info(f"Zuschauer: {viewer_label}")
+    else:
+        meta4.info("Zuschauer: -")
 
     explain_mode = st.toggle(
         "Begründungen zu Wirkungsfeldern anzeigen",
@@ -2934,14 +3378,16 @@ def main():
         help=GLOSSARY["Explain Mode"],
     )
 
-    tab_overview, tab_live, tab_community, tab_events, tab_analysis, tab_export = st.tabs([
+    tab_overview, tab_live, tab_community, tab_user_insights, tab_events, tab_analysis, tab_export = st.tabs([
         "Lagebild",
         "Live-Monitor",
         "👥 Community",
+        "User-Insights",
         "🎁 Events & Support",
         "Diskurs-Analyse",
         "Export & KI",
     ])
+    influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
 
     with tab_overview:
         st.subheader("Operatives Lagebild")
@@ -2987,12 +3433,13 @@ def main():
             render_attention_scatter(attention_df, scores_df, height=320)
 
         st.subheader("Live-Events und Unterstützung")
-        e1, e2, e3, e4, e5 = st.columns(5)
+        e1, e2, e3, e4, e5, e6 = st.columns(6)
         e1.metric("Beitritte", event_metrics["joins"], help=GLOSSARY["Aktivierungs-Funnel"])
         e2.metric("Likes", event_metrics["likes"])
-        e3.metric("Shares", event_metrics["shares"])
-        e4.metric("Gifts", event_metrics["gifts"], help=GLOSSARY["Gift-Wert"])
-        e5.metric("Diamonds", event_metrics["diamonds"], help=GLOSSARY["Gift-Wert"])
+        e3.metric("Follows", event_metrics["follows"])
+        e4.metric("Shares", event_metrics["shares"])
+        e5.metric("Gifts", event_metrics["gifts"], help=GLOSSARY["Gift-Wert"])
+        e6.metric("Diamonds", event_metrics["diamonds"], help=GLOSSARY["Gift-Wert"])
         ev_left, ev_right = st.columns([1.1, 1])
         with ev_left:
             render_event_timeline(event_timeline_df, height=240)
@@ -3058,7 +3505,7 @@ def main():
             mention_repeat_users = set(repeat_df_global["username"].astype(str).tolist()) if not repeat_df_global.empty else set()
             if not filtered_df.empty:
                 render_df = filtered_df.sort_values("dt", ascending=False).head(DISPLAY_LIMIT)
-                for _, row in render_df.iterrows():
+                for row_idx, row in render_df.iterrows():
                     badges = []
                     if row["is_question"]:
                         badges.append('<span class="pill pill-question">Frage</span>')
@@ -3077,11 +3524,17 @@ def main():
                     if row["has_toxic_marker"]:
                         heat_class = "heat-toxic"
 
-                    badge_html = "".join(badges)
                     username_col = user_color(row["username"])
                     safe_username = html.escape(str(row["username"]))
                     safe_text = html.escape(str(row["text"]))
                     ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
+                    influence_info = influence_lookup.get(str(row["username"]), {})
+                    influence_score = influence_info.get("influence_score")
+                    if influence_score is not None:
+                        badges.append(
+                            f'<span class="pill" title="Influence-Score: {html.escape(str(influence_info.get("influence_reason", "")))}">Influence {html.escape(str(influence_score))}</span>'
+                        )
+                    badge_html = "".join(badges)
 
                     avatar_col, content_col = st.columns([0.09, 0.91], gap="small")
                     with avatar_col:
@@ -3093,6 +3546,13 @@ def main():
                                 unsafe_allow_html=True,
                             )
                     with content_col:
+                        if st.button(
+                            str(row["username"]),
+                            key=f"user_profile_from_chat_{row_idx}_{str(row['timestamp']).replace(':', '').replace(' ', '_')}",
+                            help="Userprofil öffnen",
+                        ):
+                            st.session_state["selected_user_profile"] = str(row["username"])
+                            st.rerun()
                         st.markdown(
                             f"""
                             <div class="chat-item {heat_class}">
@@ -3116,6 +3576,10 @@ def main():
 
         with right:
             st.markdown('<div class="sticky-panel">', unsafe_allow_html=True)
+            selected_profile = st.session_state.get("selected_user_profile", "")
+            if selected_profile:
+                with st.expander(f"Userprofil: {selected_profile}", expanded=True):
+                    render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=True)
             st.subheader("Live-Lage")
             st.markdown(
                 f"""
@@ -3142,6 +3606,32 @@ def main():
                     """,
                     unsafe_allow_html=True,
                 )
+
+            st.subheader("Joins & Zuschauer", help=GLOSSARY["Viewer Count"])
+            if viewer_state["viewer_count"] is not None:
+                st.metric("Aktuelle Zuschauerzahl", viewer_state["viewer_count"])
+                if viewer_state.get("total_viewer_count"):
+                    st.caption(f"Gesamt-Zuschauer im Eventstrom: {viewer_state['total_viewer_count']}")
+            else:
+                st.caption("Noch keine Viewer-Count-Info empfangen.")
+            if not joiners_df.empty:
+                st.caption("Neue sichtbare Beitritte")
+                for _, join_row in joiners_df.head(5).iterrows():
+                    j_cols = st.columns([0.18, 0.82])
+                    with j_cols[0]:
+                        if join_row.get("avatar_url"):
+                            st.image(join_row["avatar_url"], width=30)
+                        else:
+                            st.markdown(
+                                f'<div class="avatar-fallback" style="background:{user_color(str(join_row["username"]))}; width:30px; height:30px; font-size:.65rem;">{initials(str(join_row["username"]))}</div>',
+                                unsafe_allow_html=True,
+                            )
+                    with j_cols[1]:
+                        if st.button(str(join_row["username"]), key=f"join_profile_{join_row.name}", help="Userprofil öffnen"):
+                            st.session_state["selected_user_profile"] = str(join_row["username"])
+                            st.rerun()
+            else:
+                st.caption("Noch keine Join-Events.")
 
             st.subheader("Wirkungsfelder", help="Fünf Scores von -3 bis +3. Der Begründungs-Schalter oberhalb zeigt, warum die Werte zustande kommen.")
             for name, val in impact.items():
@@ -3230,6 +3720,12 @@ def main():
                 st.info("Noch keine Influencer-Struktur erkennbar.")
             st.caption("Die Influencer-Map basiert auf @-Erwähnungen. Sie zeigt, wer eher adressiert wird, wer andere aktiv anspricht und wer als Hub, Verstärker oder Initiator wirkt.")
 
+            st.subheader("Influence-Score", help=GLOSSARY["Influence-Score"])
+            if not influence_df.empty:
+                display_table(influence_df.head(20), height=260)
+            else:
+                st.info("Noch kein Influence-Score verfügbar.")
+
             st.subheader("Influence / Mention Map")
             if not mention_df.empty:
                 with st.expander("Erwähnungen als Tabelle anzeigen", expanded=False):
@@ -3289,19 +3785,42 @@ def main():
                 recent_df = pd.DataFrame(snap["recent_messages"])
                 display_table(recent_df if not recent_df.empty else pd.DataFrame(columns=["timestamp", "text"]), height=220)
 
+    with tab_user_insights:
+        st.subheader("User-Insights")
+        st.caption("Detailansicht für sichtbare Accounts aus Kommentaren und Live-Events. Vollständig stille Zuschauer sind über TikTokLive nicht zuverlässig als Userliste verfügbar.")
+        with st.expander("Was diese Ansicht kann", expanded=False):
+            render_glossary(["User-Insights", "Viewer Count", "Supporter-Matrix", "VIP-Signal", "Influencer-Map"])
+
+        visible_users = all_visible_users(comment_df, event_detail_df)
+        if not visible_users:
+            st.info("Noch keine sichtbaren User aus Kommentaren oder Events.")
+        else:
+            current_selected = st.session_state.get("selected_user_profile") or visible_users[0]
+            if current_selected not in visible_users:
+                current_selected = visible_users[0]
+            selected_profile = st.selectbox(
+                "User auswählen",
+                visible_users,
+                index=visible_users.index(current_selected),
+                key="user_insights_selector",
+            )
+            st.session_state["selected_user_profile"] = selected_profile
+            render_user_profile_detail(selected_profile, comment_df, event_detail_df, scores_df, support_df, influencer_df, influence_df, compact=False)
+
     with tab_events:
         st.subheader("Live-Events & Monetarisierung")
         st.caption("Dieser Bereich nutzt strukturierte TikTokLive-Events. Neue Mitschnitte speichern Gifts, Likes, Shares, Joins und verfügbare User-Metadaten detaillierter.")
         with st.expander("Begriffe in diesem Bereich", expanded=False):
             render_glossary(["Gift-Wert", "Aktivierungs-Funnel", "Supporter-Matrix", "VIP-Signal"])
 
-        ev1, ev2, ev3, ev4, ev5, ev6 = st.columns(6)
+        ev1, ev2, ev3, ev4, ev5, ev6, ev7 = st.columns(7)
         ev1.metric("Events", event_metrics["events"])
         ev2.metric("Beitritte", event_metrics["joins"])
         ev3.metric("Likes", event_metrics["likes"])
-        ev4.metric("Shares", event_metrics["shares"])
-        ev5.metric("Gifts", event_metrics["gifts"])
-        ev6.metric("Diamonds", event_metrics["diamonds"], help=GLOSSARY["Gift-Wert"])
+        ev4.metric("Follows", event_metrics["follows"])
+        ev5.metric("Shares", event_metrics["shares"])
+        ev6.metric("Gifts", event_metrics["gifts"])
+        ev7.metric("Diamonds", event_metrics["diamonds"], help=GLOSSARY["Gift-Wert"])
 
         if event_detail_df.empty:
             st.info("Noch keine zusätzlichen Live-Events erfasst. Starte einen Livechat mit aktivierten Optional-Events oder importiere einen JSON-Export mit Event-Metadaten.")
@@ -3336,6 +3855,7 @@ def main():
                 display_cols = [
                     "timestamp", "event_type", "username", "gift_name", "gift_count",
                     "diamond_value", "like_count", "share_count", "join_count",
+                    "follow_count", "viewer_count", "total_viewer_count",
                     "is_moderator", "is_subscriber", "is_following",
                 ]
                 display_table(event_show[[c for c in display_cols if c in event_show.columns]].tail(60), height=310)
