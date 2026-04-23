@@ -11,6 +11,7 @@ import os
 import html
 import requests
 import time
+import urllib.parse
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -849,14 +850,48 @@ def build_report_html(
     viewer_df: pd.DataFrame,
     risk_radar_df: pd.DataFrame,
     correlation_df: pd.DataFrame,
+    correlation_engine_df: pd.DataFrame,
     support_df: pd.DataFrame,
     influence_df: pd.DataFrame,
+    narrative_timeline_df: pd.DataFrame,
+    power_df: pd.DataFrame,
+    indices_df: pd.DataFrame,
+    revenue_df: pd.DataFrame,
 ) -> bytes:
     generated_at = now_ts()
     host = (board or {}).get("host_username") or "-"
     status = (board or {}).get("status") or "-"
 
     charts = []
+    audience_series = []
+    if not viewer_df.empty and viewer_df["viewer_count"].max() > 0:
+        audience_series.append(
+            viewer_df[["bucket", "viewer_count"]]
+            .rename(columns={"viewer_count": "count"})
+            .assign(series="Zuschauer gesamt")
+        )
+    if not viewer_df.empty and viewer_df["active_users"].max() > 0:
+        audience_series.append(
+            viewer_df[["bucket", "active_users"]]
+            .rename(columns={"active_users": "count"})
+            .assign(series="Sichtbar aktive User")
+        )
+    if audience_series:
+        audience_df = pd.concat(audience_series, ignore_index=True)
+        charts.append(report_chart(
+            "Zuschauer- und User-Verlauf",
+            alt.Chart(audience_df).mark_line(point=True).encode(
+                x=alt.X("bucket:T", title="Zeit"),
+                y=alt.Y("count:Q", title="Anzahl"),
+                color=alt.Color(
+                    "series:N",
+                    title="Reihe",
+                    scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbar aktive User"], range=["#2563eb", "#16a34a"]),
+                ),
+                tooltip=["bucket:T", "series:N", "count:Q"],
+            ).properties(height=280),
+            "chart_audience",
+        ))
     if not viewer_df.empty and viewer_df["viewer_count"].max() > 0:
         charts.append(report_chart(
             "Viewer Dynamics",
@@ -878,6 +913,17 @@ def build_report_html(
             ).properties(height=260),
             "chart_risk",
         ))
+    if not indices_df.empty:
+        charts.append(report_chart(
+            "Wirkungsökonomie-Indizes",
+            alt.Chart(indices_df).mark_bar(cornerRadius=4).encode(
+                x=alt.X("score:Q", title="Score", scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y("index:N", title=None, sort="-x"),
+                color=alt.Color("score:Q", scale=alt.Scale(domain=[0, 50, 100], range=["#dc2626", "#f59e0b", "#16a34a"]), legend=None),
+                tooltip=["index:N", "score:Q", "basis:N"],
+            ).properties(height=240),
+            "chart_indices",
+        ))
     if not critical_df.empty:
         charts.append(report_chart(
             "Kritische Momente",
@@ -888,6 +934,17 @@ def build_report_html(
                 tooltip=["bucket:T", "messages:Q", "trigger_rate:Q", "toxic_rate:Q", "escalation_score:Q"],
             ).properties(height=260),
             "chart_critical",
+        ))
+    if not narrative_timeline_df.empty:
+        charts.append(report_chart(
+            "Live Narrative Timeline",
+            alt.Chart(narrative_timeline_df.tail(24)).mark_bar(cornerRadius=3).encode(
+                x=alt.X("bucket:T", title="Zeit"),
+                y=alt.Y("messages:Q", title="Nachrichten"),
+                color=alt.Color("label:N", title="Narrativ"),
+                tooltip=["bucket:T", "label:N", "top_words:N", "messages:Q", "shift:N"],
+            ).properties(height=260),
+            "chart_narratives",
         ))
     if not comment_df.empty:
         tone_df = comment_df.copy()
@@ -903,6 +960,28 @@ def build_report_html(
             ).properties(height=230),
             "chart_tone",
         ))
+    if not correlation_engine_df.empty:
+        corr_html = html_table(correlation_engine_df.head(12))
+        charts.append(f"""
+        <section class="report-section">
+          <h2>Event-Korrelation Engine</h2>
+          {corr_html}
+        </section>
+        """)
+    if not power_df.empty:
+        charts.append(f"""
+        <section class="report-section">
+          <h2>Power Index</h2>
+          {html_table(power_df.head(12))}
+        </section>
+        """)
+    if not revenue_df.empty:
+        charts.append(f"""
+        <section class="report-section">
+          <h2>Revenue Trigger Detection</h2>
+          {html_table(revenue_df.head(12))}
+        </section>
+        """)
 
     impact_cards = "".join(
         f"<div class='mini-card'><span>{html.escape(name)}</span><strong>{value}</strong></div>"
@@ -1844,6 +1923,555 @@ def supporter_matrix(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.Dat
     return pd.DataFrame(rows).sort_values(["support_score", "diamond_value", "comments"], ascending=[False, False, False]).reset_index(drop=True)
 
 
+def _timedelta_seconds(freq: str) -> int:
+    try:
+        return int(pd.Timedelta(freq).total_seconds())
+    except Exception:
+        return 60
+
+
+def event_correlation_engine(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "window", "relation", "lag_seconds", "correlation", "probability",
+        "strength", "sample_size", "interpretation",
+    ]
+    relations = [
+        ("10s", "Trigger-Wort -> Viewer-Spike", "trigger_rate", "viewer_delta", "positive"),
+        ("30s", "Trigger-Wort -> Viewer-Spike", "trigger_rate", "viewer_delta", "positive"),
+        ("60s", "Trigger-Wort -> Viewer-Drop", "trigger_rate", "viewer_delta", "negative"),
+        ("10s", "Gift -> Chat-Aktivität", "gifts", "comments", "positive"),
+        ("30s", "Gift -> Chat-Aktivität", "gifts", "comments", "positive"),
+        ("30s", "Shares -> Viewer-Wachstum", "shares", "viewer_delta", "positive"),
+        ("60s", "Follows -> Chat-Aktivität", "follows", "comments", "positive"),
+    ]
+    rows = []
+    for window, relation, source_col, target_col, direction in relations:
+        dyn = viewer_dynamics(comment_df, event_df, bucket=window)
+        if dyn.empty or source_col not in dyn.columns or target_col not in dyn.columns or len(dyn) < 6:
+            continue
+        lag_candidates = [0, 1, 2, 3]
+        best = None
+        for lag in lag_candidates:
+            src = dyn[source_col].astype(float)
+            tgt = dyn[target_col].shift(-lag).astype(float)
+            mask = src.notna() & tgt.notna()
+            if int(mask.sum()) < 5:
+                continue
+            corr = float(src[mask].corr(tgt[mask])) if mask.any() else 0.0
+            if pd.isna(corr):
+                continue
+            score = corr if direction == "positive" else -corr
+            if best is None or score > best["score"]:
+                best = {"lag": lag, "corr": corr, "score": score, "mask": mask}
+        if best is None:
+            continue
+        src = dyn[source_col].astype(float)
+        tgt = dyn[target_col].shift(-best["lag"]).astype(float)
+        active = src >= max(float(src.quantile(0.75)), 0.0001)
+        if direction == "positive":
+            effect = tgt >= max(float(tgt.quantile(0.75)), 0.0001)
+        else:
+            effect = tgt <= min(float(tgt.quantile(0.25)), -0.0001)
+        joint = active & effect
+        base = max(int(active.sum()), 1)
+        probability = float(joint.sum() / base)
+        strength = "schwach"
+        if best["score"] >= 0.45 or probability >= 0.7:
+            strength = "stark"
+        elif best["score"] >= 0.25 or probability >= 0.5:
+            strength = "mittel"
+        lag_seconds = best["lag"] * _timedelta_seconds(window)
+        interp = (
+            f"Wenn {relation.split(' -> ')[0]} im {window}-Fenster hoch ist, folgt {relation.split(' -> ')[1]} "
+            f"nach etwa {lag_seconds} Sekunden mit einer geschätzten Wahrscheinlichkeit von {probability*100:.0f}%."
+        )
+        rows.append({
+            "window": window,
+            "relation": relation,
+            "lag_seconds": lag_seconds,
+            "correlation": round(best["corr"], 3),
+            "probability": round(probability, 3),
+            "strength": strength,
+            "sample_size": int(best["mask"].sum()),
+            "interpretation": interp,
+        })
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(["probability", "correlation"], ascending=[False, False]).reset_index(drop=True)
+
+
+def critical_moment_brief(critical_df: pd.DataFrame, viewer_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    columns = ["bucket", "headline", "severity", "escalation_score", "viewer_delta", "detail"]
+    if critical_df is None or critical_df.empty:
+        return pd.DataFrame(columns=columns)
+    viewer_lookup = {}
+    if viewer_df is not None and not viewer_df.empty:
+        viewer_lookup = viewer_df.set_index("bucket").to_dict("index")
+    rows = []
+    for _, row in critical_df.iterrows():
+        score = float(row.get("escalation_score", 0) or 0)
+        if score < 22:
+            continue
+        bucket_val = row.get("bucket")
+        viewer_row = viewer_lookup.get(bucket_val, {})
+        viewer_delta = float(viewer_row.get("viewer_delta", 0) or 0)
+        severity = "Beobachten"
+        headline = "Verdichtete Dynamik"
+        if score >= 40:
+            severity = "Kritisch"
+            headline = "Diskurs kippt gerade"
+        elif score >= 30:
+            severity = "Angespannt"
+            headline = "Kritischer Moment"
+        detail = (
+            f"Trigger {float(row.get('trigger_rate', 0))*100:.0f}%, Abwertung {float(row.get('toxic_rate', 0))*100:.0f}%, "
+            f"Dominanz {float(row.get('dominance', 0))*100:.0f}%, Viewer-Delta {viewer_delta:+.0f}."
+        )
+        rows.append({
+            "bucket": bucket_val,
+            "headline": headline,
+            "severity": severity,
+            "escalation_score": round(score, 1),
+            "viewer_delta": round(viewer_delta, 1),
+            "detail": detail,
+        })
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(["escalation_score", "bucket"], ascending=[False, False]).reset_index(drop=True)
+
+
+def narrative_label_from_words(words: list[str]) -> str:
+    words_set = {w.lower() for w in words}
+    if words_set & {"hallo", "guten", "abend", "moin", "servus", "schön", "schoen"}:
+        return "Smalltalk / Begrüßung"
+    if words_set & {"migration", "migranten", "ausländer", "auslaender", "abschiebung", "grenze"}:
+        return "Migration"
+    if words_set & {"afd", "merz", "grüne", "gruenen", "regierung", "wahl", "partei"}:
+        return "Parteipolitik"
+    if words_set & {"krieg", "putin", "nato", "ukraine", "russland"}:
+        return "Geopolitik"
+    if words_set & {"strom", "energie", "gas", "preise", "wirtschaft", "inflation"}:
+        return "Energie / Wirtschaft"
+    if words_set & {"lügenpresse", "luegenpresse", "propaganda", "fakenews", "systemmedien"}:
+        return "Medienmisstrauen"
+    if words_set & {"woke", "gender", "identität", "identitaet"}:
+        return "Kulturkampf"
+    if words_set & {"gift", "danke", "diamonds", "rose", "teilen"}:
+        return "Support / Aktivierung"
+    if not words:
+        return "Kein klares Narrativ"
+    return ", ".join(words[:3])
+
+
+def live_narrative_timeline(comment_df: pd.DataFrame, bucket: str = "2min") -> pd.DataFrame:
+    columns = ["bucket", "label", "top_words", "messages", "trigger_rate", "toxic_rate", "shift"]
+    if comment_df.empty or comment_df["dt"].isna().all():
+        return pd.DataFrame(columns=columns)
+    df = comment_df.copy()
+    df["bucket"] = df["dt"].dt.floor(bucket)
+    rows = []
+    previous = None
+    for bucket_val, group in df.groupby("bucket"):
+        word_counter = Counter()
+        for text in group["text"].astype(str):
+            word_counter.update(extract_words(text))
+        top_words_local = [word for word, _ in word_counter.most_common(4)]
+        label = narrative_label_from_words(top_words_local)
+        shift = "stabil"
+        if previous and label != previous:
+            shift = "Narrativwechsel"
+        rows.append({
+            "bucket": bucket_val,
+            "label": label,
+            "top_words": ", ".join(top_words_local) if top_words_local else "-",
+            "messages": int(len(group)),
+            "trigger_rate": float(group["has_trigger"].mean()) if len(group) else 0.0,
+            "toxic_rate": float(group["has_toxic_marker"].mean()) if len(group) else 0.0,
+            "shift": shift,
+        })
+        previous = label
+    return pd.DataFrame(rows).sort_values("bucket").reset_index(drop=True)
+
+
+def viewer_conversion_flow(comment_df: pd.DataFrame, event_df: pd.DataFrame) -> pd.DataFrame:
+    funnel_df = activation_funnel(comment_df, event_df)
+    if funnel_df.empty:
+        return pd.DataFrame(columns=["from_stage", "to_stage", "from_users", "to_users", "conversion_rate", "drop_off"])
+    rows = []
+    previous_users = None
+    previous_stage = None
+    for _, row in funnel_df.iterrows():
+        users = int(row.get("users", 0) or 0)
+        stage = str(row.get("stage"))
+        if previous_stage is not None:
+            conversion_rate = users / max(previous_users, 1)
+            rows.append({
+                "from_stage": previous_stage,
+                "to_stage": stage,
+                "from_users": previous_users,
+                "to_users": users,
+                "conversion_rate": conversion_rate,
+                "drop_off": max(previous_users - users, 0),
+            })
+        previous_users = users
+        previous_stage = stage
+    return pd.DataFrame(rows)
+
+
+def influencer_graph_2(comment_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    edge_columns = ["source", "target", "count", "response_hits", "response_rate", "edge_power"]
+    node_columns = ["username", "weighted_out", "weighted_in", "hubs", "authority", "edge_power"]
+    if comment_df.empty:
+        return pd.DataFrame(columns=node_columns), pd.DataFrame(columns=edge_columns)
+    df = comment_df.sort_values("dt").reset_index(drop=True)
+    edge_stats: dict[tuple[str, str], dict] = {}
+    for idx, row in df.iterrows():
+        source = str(row.get("username", "")).strip()
+        if not source:
+            continue
+        text = str(row.get("text", ""))
+        targets = [t.lower() for t in re.findall(r"@([A-Za-z0-9._]+)", text)]
+        if not targets:
+            continue
+        window = df.iloc[idx + 1: idx + 5]
+        for target in targets:
+            key = (source, target)
+            stat = edge_stats.setdefault(key, {"count": 0, "response_hits": 0})
+            stat["count"] += 1
+            if not window.empty:
+                responses = window[
+                    (window["username"].astype(str).str.lower() == target)
+                    & ((window["dt"] - row["dt"]).dt.total_seconds() <= 120)
+                ]
+                if not responses.empty:
+                    stat["response_hits"] += 1
+    if not edge_stats:
+        return pd.DataFrame(columns=node_columns), pd.DataFrame(columns=edge_columns)
+    edge_rows = []
+    node_acc: dict[str, dict] = {}
+    for (source, target), stat in edge_stats.items():
+        count = int(stat["count"])
+        response_hits = int(stat["response_hits"])
+        response_rate = response_hits / max(count, 1)
+        edge_power = round(count * (1 + response_rate), 2)
+        edge_rows.append({
+            "source": source,
+            "target": target,
+            "count": count,
+            "response_hits": response_hits,
+            "response_rate": round(response_rate, 3),
+            "edge_power": edge_power,
+        })
+        node_acc.setdefault(source, {"weighted_out": 0.0, "weighted_in": 0.0})
+        node_acc.setdefault(target, {"weighted_out": 0.0, "weighted_in": 0.0})
+        node_acc[source]["weighted_out"] += edge_power
+        node_acc[target]["weighted_in"] += edge_power
+    node_rows = []
+    for username, values in node_acc.items():
+        weighted_out = float(values["weighted_out"])
+        weighted_in = float(values["weighted_in"])
+        node_rows.append({
+            "username": username,
+            "weighted_out": round(weighted_out, 2),
+            "weighted_in": round(weighted_in, 2),
+            "hubs": round(weighted_out / max(weighted_in + 1, 1), 2),
+            "authority": round(weighted_in / max(weighted_out + 1, 1), 2),
+            "edge_power": round(weighted_out + weighted_in, 2),
+        })
+    edge_df = pd.DataFrame(edge_rows).sort_values(["edge_power", "count"], ascending=[False, False]).reset_index(drop=True)
+    node_df = pd.DataFrame(node_rows).sort_values("edge_power", ascending=False).reset_index(drop=True)
+    return node_df, edge_df
+
+
+def community_detection(comment_df: pd.DataFrame, edges_df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["community_id", "members", "member_count", "messages", "dominant_narrative"]
+    if comment_df.empty or edges_df.empty:
+        return pd.DataFrame(columns=columns)
+    adjacency: dict[str, set[str]] = {}
+    for _, row in edges_df.iterrows():
+        source = str(row.get("source", ""))
+        target = str(row.get("target", ""))
+        if not source or not target:
+            continue
+        adjacency.setdefault(source, set()).add(target)
+        adjacency.setdefault(target, set()).add(source)
+    visited = set()
+    communities = []
+    for node in adjacency:
+        if node in visited:
+            continue
+        stack = [node]
+        component = []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            stack.extend(list(adjacency.get(current, set()) - visited))
+        if len(component) < 2:
+            continue
+        sub = comment_df[comment_df["username"].isin(component)]
+        words = top_words(sub, n=5)
+        dominant = narrative_label_from_words(words["word"].tolist()) if not words.empty else "-"
+        communities.append({
+            "community_id": f"Gruppe {len(communities) + 1}",
+            "members": ", ".join(component[:8]) + (" ..." if len(component) > 8 else ""),
+            "member_count": len(component),
+            "messages": int(len(sub)),
+            "dominant_narrative": dominant,
+        })
+    if not communities:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(communities).sort_values(["member_count", "messages"], ascending=[False, False]).reset_index(drop=True)
+
+
+def narrative_push_detection(comment_df: pd.DataFrame, bucket: str = "30s") -> pd.DataFrame:
+    columns = ["bucket", "keyword", "users", "messages", "coordination_score", "accounts"]
+    if comment_df.empty or comment_df["dt"].isna().all():
+        return pd.DataFrame(columns=columns)
+    rows = []
+    df = comment_df.copy()
+    df["bucket"] = df["dt"].dt.floor(bucket)
+    for bucket_val, group in df.groupby("bucket"):
+        keyword_users: dict[str, set[str]] = {}
+        keyword_messages: Counter = Counter()
+        for _, row in group.iterrows():
+            text = str(row.get("text", "")).lower()
+            username = str(row.get("username", ""))
+            matched = {kw for kw in TRIGGER_KEYWORDS if kw in text}
+            for kw in matched:
+                keyword_users.setdefault(kw, set()).add(username)
+                keyword_messages[kw] += 1
+        for kw, users in keyword_users.items():
+            if len(users) < 2 or keyword_messages[kw] < 3:
+                continue
+            coordination_score = round(min(100.0, len(users) * 14 + keyword_messages[kw] * 9), 1)
+            rows.append({
+                "bucket": bucket_val,
+                "keyword": kw,
+                "users": len(users),
+                "messages": int(keyword_messages[kw]),
+                "coordination_score": coordination_score,
+                "accounts": ", ".join(sorted(users)[:6]),
+            })
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(["coordination_score", "bucket"], ascending=[False, False]).reset_index(drop=True)
+
+
+def power_index(comment_df: pd.DataFrame, scores_df: pd.DataFrame, influencer_df: pd.DataFrame, support_df: pd.DataFrame, influence_df: pd.DataFrame) -> pd.DataFrame:
+    if comment_df.empty:
+        return pd.DataFrame(columns=["username", "power_index", "attention_share", "network_power", "support_score", "influence_score", "role"])
+    attention_df = attention_vs_substance(comment_df)[["username", "attention_share"]]
+    score_lookup = scores_df[["username", "shift_score", "role"]] if not scores_df.empty else pd.DataFrame(columns=["username", "shift_score", "role"])
+    network_lookup = influencer_df[["user", "sent_mentions", "received_mentions"]].rename(columns={"user": "username"}) if not influencer_df.empty else pd.DataFrame(columns=["username", "sent_mentions", "received_mentions"])
+    support_lookup = support_df[["username", "support_score"]] if not support_df.empty else pd.DataFrame(columns=["username", "support_score"])
+    influence_lookup = influence_df[["username", "influence_score"]] if not influence_df.empty else pd.DataFrame(columns=["username", "influence_score"])
+    base = attention_df.merge(score_lookup, on="username", how="left").merge(network_lookup, on="username", how="left").merge(support_lookup, on="username", how="left").merge(influence_lookup, on="username", how="left")
+    for col in ["shift_score", "sent_mentions", "received_mentions", "support_score", "influence_score"]:
+        if col not in base.columns:
+            base[col] = 0
+        base[col] = base[col].fillna(0)
+    base["network_power"] = base["sent_mentions"] + base["received_mentions"] * 1.25
+    base["power_index"] = (
+        base["attention_share"] * 100 * 0.24
+        + base["network_power"] * 0.22
+        + base["support_score"] * 0.18
+        + base["influence_score"] * 0.24
+        + base["shift_score"] * 0.12
+    ).round(1)
+    return base.sort_values("power_index", ascending=False).reset_index(drop=True)
+
+
+def host_copilot_suggestions(comment_df: pd.DataFrame, correlation_df: pd.DataFrame, risk_df: pd.DataFrame, push_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if comment_df.empty:
+        return pd.DataFrame(columns=["priority", "title", "guidance", "why"])
+    recent = recent_window_metrics(comment_df, minutes=5)
+    top_risk = risk_df.sort_values("risk_score", ascending=False).head(2) if risk_df is not None and not risk_df.empty else pd.DataFrame()
+    if recent["toxic_rate"] >= 0.08:
+        rows.append({
+            "priority": "hoch",
+            "title": "Deeskalieren",
+            "guidance": "Kurz verlangsamen, Grenzen setzen und eine konkrete Rückfrage an ruhige Stimmen stellen.",
+            "why": f"Abwertungsquote zuletzt bei {recent['toxic_rate']*100:.1f}%.",
+        })
+    if recent["trigger_rate"] >= 0.18:
+        rows.append({
+            "priority": "hoch",
+            "title": "Trigger nicht verstärken",
+            "guidance": "Nicht auf das lauteste Trigger-Framing anspringen, sondern das Thema neu rahmen und konkretisieren.",
+            "why": f"Triggerrate zuletzt bei {recent['trigger_rate']*100:.1f}%.",
+        })
+    if correlation_df is not None and not correlation_df.empty:
+        top_signal = correlation_df.iloc[0]
+        rows.append({
+            "priority": "mittel",
+            "title": "Auf Muster reagieren",
+            "guidance": "Das aktuelle Muster moderieren, bevor es weiter skaliert: ruhig einordnen, dann Fokusfrage stellen.",
+            "why": str(top_signal.get("interpretation", "")),
+        })
+    if push_df is not None and not push_df.empty:
+        top_push = push_df.iloc[0]
+        rows.append({
+            "priority": "mittel",
+            "title": "Koordinierte Narrative brechen",
+            "guidance": "Mehrere Perspektiven gleichzeitig aufrufen und nicht nur den am häufigsten wiederholten Begriff aufgreifen.",
+            "why": f"Keyword '{top_push.get('keyword')}' wird zeitgleich von mehreren Accounts getragen.",
+        })
+    if not top_risk.empty:
+        risk_row = top_risk.iloc[0]
+        rows.append({
+            "priority": "mittel",
+            "title": "Risikodimension entschärfen",
+            "guidance": "Kurz benennen, was gerade passiert, und das Gespräch auf überprüfbare Aussagen zurückführen.",
+            "why": f"Höchster aktueller Radarwert: {risk_row.get('dimension')} ({risk_row.get('risk_score')}).",
+        })
+    if not rows:
+        rows.append({
+            "priority": "niedrig",
+            "title": "Dialog halten",
+            "guidance": "Gerade wirkt der Chat stabil. Offene Frage stellen und konstruktive Stimmen sichtbar machen.",
+            "why": "Keine starken Warnsignale in den letzten Minuten.",
+        })
+    return pd.DataFrame(rows).head(5)
+
+
+def wirkung_indices(comment_df: pd.DataFrame, impact: dict, fairness: dict, push_df: pd.DataFrame, risk_df: pd.DataFrame) -> pd.DataFrame:
+    if comment_df.empty:
+        return pd.DataFrame(columns=["index", "score", "basis"])
+    trigger_rate = float(comment_df["has_trigger"].mean())
+    toxic_rate = float(comment_df["has_toxic_marker"].mean())
+    avg_impact = (sum(impact.values()) / max(len(impact), 1) + 3) / 6
+    push_pressure = min((float(push_df["coordination_score"].mean()) / 100.0) if push_df is not None and not push_df.empty else 0.0, 1.0)
+    radar_pressure = min((float(risk_df["risk_score"].mean()) / 100.0) if risk_df is not None and not risk_df.empty else 0.0, 1.0)
+    democracy = max(0.0, min(100.0, 100 * (0.38 * avg_impact + 0.25 * (1 - fairness["top1_share"]) + 0.20 * (1 - toxic_rate) + 0.17 * (1 - trigger_rate))))
+    polarization = max(0.0, min(100.0, 100 * (0.36 * fairness["top1_share"] + 0.24 * fairness["top3_share"] + 0.20 * trigger_rate + 0.20 * toxic_rate)))
+    narrative_risk = max(0.0, min(100.0, 100 * (0.38 * trigger_rate + 0.24 * toxic_rate + 0.20 * push_pressure + 0.18 * radar_pressure)))
+    wirkung = max(0.0, min(100.0, 100 * (0.34 * avg_impact + 0.24 * (1 - polarization / 100) + 0.22 * (1 - narrative_risk / 100) + 0.20 * (1 - fairness["gini"]))))
+    rows = [
+        {"index": "Demokratie-Impact Score", "score": round(democracy, 1), "basis": "Vielfalt, Diskursqualität, geringe Dominanz"},
+        {"index": "Spaltungsindex", "score": round(polarization, 1), "basis": "Dominanz, Trigger, Abwertung, Top-Anteile"},
+        {"index": "Narrative Risiko Index", "score": round(narrative_risk, 1), "basis": "Triggerdruck, Push-Signale, Radar"},
+        {"index": "Wirkungsökonomie-Score", "score": round(wirkung, 1), "basis": "Impact-Felder, geringe Spaltung, geringe Risiken"},
+    ]
+    return pd.DataFrame(rows)
+
+
+def revenue_trigger_detection(comment_df: pd.DataFrame, event_df: pd.DataFrame, bucket: str = "1min") -> pd.DataFrame:
+    columns = ["bucket", "diamonds", "gifts", "trigger_rate", "top_words", "revenue_signal"]
+    if comment_df.empty or event_df.empty:
+        return pd.DataFrame(columns=columns)
+    viewer_df = viewer_dynamics(comment_df, event_df, bucket=bucket)
+    if viewer_df.empty:
+        return pd.DataFrame(columns=columns)
+    comments = comment_df.copy()
+    comments["bucket"] = comments["dt"].dt.floor(bucket)
+    rows = []
+    for bucket_val, group in comments.groupby("bucket"):
+        metrics = viewer_df[viewer_df["bucket"] == bucket_val]
+        if metrics.empty:
+            continue
+        metric = metrics.iloc[0]
+        diamonds = float(metric.get("diamonds", 0) or 0)
+        gifts = float(metric.get("gifts", 0) or 0)
+        if diamonds <= 0 and gifts <= 0:
+            continue
+        words = top_words(group, n=4)
+        revenue_signal = min(100.0, diamonds * 0.8 + gifts * 12 + float(metric.get("trigger_rate", 0)) * 100)
+        rows.append({
+            "bucket": bucket_val,
+            "diamonds": int(diamonds),
+            "gifts": int(gifts),
+            "trigger_rate": float(metric.get("trigger_rate", 0)),
+            "top_words": ", ".join(words["word"].tolist()) if not words.empty else "-",
+            "revenue_signal": round(revenue_signal, 1),
+        })
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(["revenue_signal", "bucket"], ascending=[False, False]).reset_index(drop=True)
+
+
+def supporter_lifecycle(support_df: pd.DataFrame) -> pd.DataFrame:
+    if support_df.empty:
+        return pd.DataFrame(columns=["username", "lifecycle", "support_score", "diamonds", "gifts", "shares"])
+    rows = []
+    for _, row in support_df.iterrows():
+        lifecycle = "Beobachter"
+        if int(row.get("gifts", 0)) >= 3 or int(row.get("diamond_value", 0)) >= 150:
+            lifecycle = "VIP / Stamm-Supporter"
+        elif int(row.get("gifts", 0)) > 0:
+            lifecycle = "Einmaliger Gifter"
+        elif int(row.get("shares", 0)) >= 2 or int(row.get("follows", 0)) > 0:
+            lifecycle = "Aktivierbarer Supporter"
+        elif int(row.get("comments", 0)) >= 8 and int(row.get("likes", 0)) >= 10:
+            lifecycle = "Community-Stammgast"
+        rows.append({
+            "username": row.get("username"),
+            "lifecycle": lifecycle,
+            "support_score": row.get("support_score", 0),
+            "diamonds": row.get("diamond_value", 0),
+            "gifts": row.get("gifts", 0),
+            "shares": row.get("shares", 0),
+        })
+    return pd.DataFrame(rows).sort_values(["support_score", "diamonds"], ascending=[False, False]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def platform_intelligence() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    conn = get_conn()
+    boards_df = pd.read_sql_query("SELECT board_id, host_username, created_at, started_at, status FROM boards", conn)
+    messages_df = pd.read_sql_query("SELECT board_id, timestamp, type, username, text FROM messages", conn)
+    conn.close()
+    if messages_df.empty:
+        empty = pd.DataFrame()
+        return empty, empty, empty
+    messages_df["timestamp"] = pd.to_datetime(messages_df["timestamp"], errors="coerce")
+    cross_live = (
+        messages_df[messages_df["type"] == "comment"]
+        .groupby("username")
+        .agg(boards=("board_id", "nunique"), comments=("text", "size"))
+        .reset_index()
+    )
+    cross_live = cross_live[cross_live["boards"] > 1].sort_values(["boards", "comments"], ascending=[False, False]).reset_index(drop=True)
+
+    creator_rows = []
+    comment_df = messages_df[messages_df["type"] == "comment"].copy()
+    for board_id_value, group in comment_df.groupby("board_id"):
+        host_row = boards_df[boards_df["board_id"] == board_id_value]
+        host_name = host_row["host_username"].iloc[0] if not host_row.empty else "-"
+        users = group["username"].nunique()
+        messages = len(group)
+        concentration = 0.0
+        user_counts = group.groupby("username").size()
+        if not user_counts.empty:
+            concentration = float(user_counts.max() / user_counts.sum())
+        creator_rows.append({
+            "board_id": board_id_value,
+            "host_username": host_name,
+            "messages": messages,
+            "users": users,
+            "dominance": round(concentration, 3),
+        })
+    creator_df = pd.DataFrame(creator_rows).sort_values("messages", ascending=False).reset_index(drop=True) if creator_rows else pd.DataFrame()
+
+    global_rows = []
+    for board_id_value, group in comment_df.groupby("board_id"):
+        words = Counter()
+        for text in group["text"].dropna().astype(str):
+            words.update(extract_words(text))
+        top_terms = ", ".join([word for word, _ in words.most_common(4)])
+        global_rows.append({
+            "board_id": board_id_value,
+            "narrative": narrative_label_from_words([word for word, _ in words.most_common(4)]),
+            "top_terms": top_terms,
+            "messages": int(len(group)),
+        })
+    global_df = pd.DataFrame(global_rows).sort_values("messages", ascending=False).reset_index(drop=True) if global_rows else pd.DataFrame()
+    return cross_live, creator_df, global_df
+
+
 def engagement_matrix_long(support_df: pd.DataFrame) -> pd.DataFrame:
     if support_df.empty:
         return pd.DataFrame(columns=["username", "metric", "value"])
@@ -2502,6 +3130,44 @@ def render_viewer_dynamics(viewer_df: pd.DataFrame, height: int = 310):
     st.altair_chart((line + points).properties(height=height), use_container_width=True)
 
 
+def render_audience_timeline(viewer_df: pd.DataFrame, height: int = 320):
+    if viewer_df is None or viewer_df.empty:
+        st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
+        return
+    series_frames = []
+    if "viewer_count" in viewer_df.columns and float(viewer_df["viewer_count"].max()) > 0:
+        series_frames.append(
+            viewer_df[["bucket", "viewer_count"]]
+            .rename(columns={"viewer_count": "count"})
+            .assign(series="Zuschauer gesamt")
+        )
+    if "active_users" in viewer_df.columns and float(viewer_df["active_users"].max()) > 0:
+        series_frames.append(
+            viewer_df[["bucket", "active_users"]]
+            .rename(columns={"active_users": "count"})
+            .assign(series="Sichtbar aktive User")
+        )
+    if not series_frames:
+        st.info("Noch keine Zeitreihe für Zuschauer oder aktive User verfügbar.")
+        return
+    plot_df = pd.concat(series_frames, ignore_index=True)
+    chart = alt.Chart(plot_df).mark_line(point=True).encode(
+        x=alt.X("bucket:T", title="Zeit"),
+        y=alt.Y("count:Q", title="Anzahl"),
+        color=alt.Color(
+            "series:N",
+            title="Reihe",
+            scale=alt.Scale(domain=["Zuschauer gesamt", "Sichtbar aktive User"], range=["#2563eb", "#16a34a"]),
+        ),
+        tooltip=[
+            alt.Tooltip("bucket:T", title="Zeit"),
+            alt.Tooltip("series:N", title="Reihe"),
+            alt.Tooltip("count:Q", title="Anzahl", format=".0f"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
 def render_lurker_conversion(viewer_df: pd.DataFrame, height: int = 240):
     if viewer_df is None or viewer_df.empty or viewer_df["viewer_count"].max() <= 0:
         st.info("Noch keine Daten für Lurker/Conversion.")
@@ -2545,6 +3211,107 @@ def render_temporal_correlations(correlation_df: pd.DataFrame, height: int = 280
             alt.Tooltip("trigger_rate:Q", title="Trigger", format=".0%"),
             alt.Tooltip("interpretation:N", title="Interpretation"),
         ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_event_correlation_engine(corr_engine_df: pd.DataFrame, height: int = 280):
+    if corr_engine_df is None or corr_engine_df.empty:
+        st.info("Noch keine belastbaren Lag-/Korrelationsmuster erkannt.")
+        return
+    plot_df = corr_engine_df.head(14).copy()
+    plot_df["probability_pct"] = plot_df["probability"] * 100
+    chart = alt.Chart(plot_df).mark_bar(cornerRadius=4).encode(
+        x=alt.X("probability_pct:Q", title="geschätzte Wahrscheinlichkeit %"),
+        y=alt.Y("relation:N", title=None, sort="-x"),
+        color=alt.Color("window:N", title="Fenster"),
+        tooltip=[
+            alt.Tooltip("relation:N", title="Beziehung"),
+            alt.Tooltip("window:N", title="Fenster"),
+            alt.Tooltip("lag_seconds:Q", title="Lag (Sek.)"),
+            alt.Tooltip("probability_pct:Q", title="Wahrscheinlichkeit %", format=".1f"),
+            alt.Tooltip("correlation:Q", title="Korrelation", format=".2f"),
+            alt.Tooltip("strength:N", title="Stärke"),
+            alt.Tooltip("interpretation:N", title="Interpretation"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_narrative_timeline(timeline_df: pd.DataFrame, height: int = 280):
+    if timeline_df is None or timeline_df.empty:
+        st.info("Noch keine Narrative im Zeitverlauf erkennbar.")
+        return
+    chart = alt.Chart(timeline_df.tail(24)).mark_bar(cornerRadius=3).encode(
+        x=alt.X("bucket:T", title="Zeitfenster"),
+        y=alt.Y("messages:Q", title="Nachrichten"),
+        color=alt.Color("label:N", title="Narrativ"),
+        tooltip=[
+            alt.Tooltip("bucket:T", title="Zeit"),
+            alt.Tooltip("label:N", title="Narrativ"),
+            alt.Tooltip("top_words:N", title="Top-Wörter"),
+            alt.Tooltip("messages:Q", title="Nachrichten"),
+            alt.Tooltip("trigger_rate:Q", title="Trigger", format=".0%"),
+            alt.Tooltip("toxic_rate:Q", title="Abwertung", format=".0%"),
+            alt.Tooltip("shift:N", title="Wechsel"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_conversion_flow(flow_df: pd.DataFrame, height: int = 260):
+    if flow_df is None or flow_df.empty:
+        st.info("Noch keine verfeinerte Conversion-Flow-Ansicht verfügbar.")
+        return
+    plot_df = flow_df.copy()
+    plot_df["conversion_pct"] = plot_df["conversion_rate"] * 100
+    chart = alt.Chart(plot_df).mark_bar(cornerRadius=4).encode(
+        x=alt.X("conversion_pct:Q", title="Conversion %"),
+        y=alt.Y("to_stage:N", title=None, sort=None),
+        color=alt.Color("drop_off:Q", title="Drop-off", scale=alt.Scale(scheme="orangered")),
+        tooltip=[
+            alt.Tooltip("from_stage:N", title="Von"),
+            alt.Tooltip("to_stage:N", title="Zu"),
+            alt.Tooltip("from_users:Q", title="Ausgang"),
+            alt.Tooltip("to_users:Q", title="Ziel"),
+            alt.Tooltip("conversion_pct:Q", title="Conversion %", format=".1f"),
+            alt.Tooltip("drop_off:Q", title="Drop-off", format=".0f"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_power_index(power_df: pd.DataFrame, height: int = 280):
+    if power_df is None or power_df.empty:
+        st.info("Noch kein Power Index verfügbar.")
+        return
+    plot_df = power_df.head(18).copy()
+    chart = alt.Chart(plot_df).mark_bar(cornerRadius=4).encode(
+        x=alt.X("power_index:Q", title="Power Index"),
+        y=alt.Y("username:N", title="User", sort="-x"),
+        color=alt.Color("role:N", title="Rolle"),
+        tooltip=[
+            alt.Tooltip("username:N", title="User"),
+            alt.Tooltip("power_index:Q", title="Power Index", format=".1f"),
+            alt.Tooltip("attention_share:Q", title="Aufmerksamkeit", format=".2f"),
+            alt.Tooltip("network_power:Q", title="Netzwerk"),
+            alt.Tooltip("support_score:Q", title="Support"),
+            alt.Tooltip("influence_score:Q", title="Influence"),
+            alt.Tooltip("role:N", title="Rolle"),
+        ],
+    ).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_wirkung_indices(indices_df: pd.DataFrame, height: int = 240):
+    if indices_df is None or indices_df.empty:
+        st.info("Noch keine Wirkungsindizes verfügbar.")
+        return
+    chart = alt.Chart(indices_df).mark_bar(cornerRadius=4).encode(
+        x=alt.X("score:Q", title="Score", scale=alt.Scale(domain=[0, 100])),
+        y=alt.Y("index:N", title=None, sort="-x"),
+        color=alt.Color("score:Q", title="Score", scale=alt.Scale(domain=[0, 50, 100], range=["#dc2626", "#f59e0b", "#16a34a"])),
+        tooltip=["index:N", "score:Q", "basis:N"],
     ).properties(height=height)
     st.altair_chart(chart, use_container_width=True)
 
@@ -3373,10 +4140,22 @@ def build_ai_payload(
     event_metrics = live_event_metrics(event_df)
     viewer = viewer_dynamics(comment_df, event_df)
     correlations = temporal_correlation_signals(viewer)
+    correlation_engine = event_correlation_engine(comment_df, event_df)
     gift_users = gift_leaderboard(event_df)
     gift_types = gift_type_matrix(event_df)
     funnel = activation_funnel(comment_df, event_df)
+    conversion_flow = viewer_conversion_flow(comment_df, event_df)
     supporters = supporter_matrix(comment_df, event_df)
+    supporter_lifecycle_df = supporter_lifecycle(supporters)
+    timeline = live_narrative_timeline(comment_df)
+    push_df = narrative_push_detection(comment_df)
+    graph_nodes, graph_edges = influencer_graph_2(comment_df)
+    communities = community_detection(comment_df, graph_edges)
+    power_df = power_index(comment_df, scores_df, influence, supporters, influence_scores(comment_df, scores_df, influence, supporters))
+    risk_df = live_risk_radar(comment_df, scores_df, impact, viewer, supporters)
+    host_copilot_df = host_copilot_suggestions(comment_df, correlations, risk_df, push_df)
+    indices_df = wirkung_indices(comment_df, impact, fairness_metrics(comment_df), push_df, risk_df)
+    revenue_df = revenue_trigger_detection(comment_df, event_df)
 
     payload = {
         "mode": mode,
@@ -3398,10 +4177,20 @@ def build_ai_payload(
         "live_events": event_metrics,
         "viewer_dynamics": df_records(viewer.tail(30), 30),
         "temporal_correlations": df_records(correlations, 15),
+        "event_correlation_engine": df_records(correlation_engine, 15),
         "gift_leaderboard": df_records(gift_users, 12),
         "gift_types": df_records(gift_types, 12),
         "activation_funnel": df_records(funnel, 8),
+        "conversion_flow": df_records(conversion_flow, 8),
         "supporter_signals": df_records(supporters, 15),
+        "supporter_lifecycle": df_records(supporter_lifecycle_df, 15),
+        "narrative_timeline": df_records(timeline, 15),
+        "narrative_push_detection": df_records(push_df, 15),
+        "community_detection": df_records(communities, 10),
+        "power_index": df_records(power_df, 12),
+        "wirkung_indices": df_records(indices_df, 10),
+        "revenue_triggers": df_records(revenue_df, 12),
+        "host_copilot": df_records(host_copilot_df, 8),
         "report_text": report_text or "",
         "recent_messages": recent_messages,
     }
@@ -3721,10 +4510,15 @@ def main():
 
     qp = st.query_params
     query_board = qp.get("board")
+    query_user = qp.get("user")
     if isinstance(query_board, list):
         query_board = query_board[0] if query_board else None
+    if isinstance(query_user, list):
+        query_user = query_user[0] if query_user else None
     if query_board:
         st.session_state.board_id = query_board
+    if query_user:
+        st.session_state["selected_user_profile"] = str(query_user)
 
     st.markdown("""
     <style>
@@ -3952,26 +4746,39 @@ def main():
     event_timeline_df = event_timeline(event_detail_df)
     viewer_df = viewer_dynamics(comment_df, event_detail_df)
     correlation_df = temporal_correlation_signals(viewer_df)
+    correlation_engine_df = event_correlation_engine(comment_df, event_detail_df)
     gift_users_df = gift_leaderboard(event_detail_df)
     gift_types_df = gift_type_matrix(event_detail_df)
     funnel_df = activation_funnel(comment_df, event_detail_df)
+    conversion_flow_df = viewer_conversion_flow(comment_df, event_detail_df)
     support_df = supporter_matrix(comment_df, event_detail_df)
+    supporter_lifecycle_df = supporter_lifecycle(support_df)
     viewer_state = latest_viewer_count(event_detail_df)
     joiners_df = recent_joiners(event_detail_df)
     repeat_df_global = repeated_messages(comment_df, min_count=2)
     live_ampel = compute_live_ampel(comment_df, scores_df, impact)
     alerts = compute_alerts(comment_df, scores_df, impact)
     drift_df = narrative_drift(comment_df)
+    narrative_timeline_df = live_narrative_timeline(comment_df)
     mention_df = mention_edges(comment_df)
     influencer_df = influencer_map(comment_df)
+    graph2_nodes_df, graph2_edges_df = influencer_graph_2(comment_df)
+    communities_df = community_detection(comment_df, graph2_edges_df)
     greeting_df = greeting_edges(comment_df)
     critical_df = critical_moments(comment_df)
+    critical_brief_df = critical_moment_brief(critical_df, viewer_df)
     fairness = fairness_metrics(comment_df)
     trigger_df = trigger_effect_analysis(comment_df)
+    push_df = narrative_push_detection(comment_df)
     archetype_df = user_archetypes(comment_df, scores_df)
     attention_df = attention_vs_substance(comment_df)
     influence_df = influence_scores(comment_df, scores_df, influencer_df, support_df)
+    power_df = power_index(comment_df, scores_df, influencer_df, support_df, influence_df)
     risk_radar_df = live_risk_radar(comment_df, scores_df, impact, viewer_df, support_df)
+    host_copilot_df = host_copilot_suggestions(comment_df, correlation_df, risk_radar_df, push_df)
+    indices_df = wirkung_indices(comment_df, impact, fairness, push_df, risk_radar_df)
+    revenue_df = revenue_trigger_detection(comment_df, event_detail_df)
+    cross_live_df, creator_benchmark_df, global_narratives_df = platform_intelligence()
     phase_label = phase_of_live(comment_df)
     report_text = board.get("report_text", "") if board else ""
 
@@ -4010,11 +4817,7 @@ def main():
     else:
         meta4.info("Zuschauer: -")
 
-    explain_mode = st.toggle(
-        "Begründungen zu Wirkungsfeldern anzeigen",
-        value=False,
-        help=GLOSSARY["Explain Mode"],
-    )
+    explain_mode = bool(st.session_state.get("impact_explain_mode", False))
 
     tab_overview, tab_live, tab_community, tab_user_insights, tab_events, tab_analysis, tab_export = st.tabs([
         "Lagebild",
@@ -4031,6 +4834,12 @@ def main():
         st.subheader("Operatives Lagebild")
         o1, o2 = st.columns([1.1, 1])
         with o1:
+            st.toggle(
+                "Begründungen zu Wirkungsfeldern anzeigen",
+                key="impact_explain_mode",
+                help=GLOSSARY["Explain Mode"],
+            )
+            explain_mode = bool(st.session_state.get("impact_explain_mode", False))
             render_impact_overview(impact, impact_explanations if explain_mode else None)
             st.caption("Die Wirkungsfelder verdichten Chatqualität, Salienz, Dominanz, Trigger und emotionale Resonanz.")
             with st.expander("Begriffe im Lagebild", expanded=False):
@@ -4071,6 +4880,10 @@ def main():
             else:
                 st.info("Noch keine Alert-Signale.")
 
+        st.subheader("Zuschauer- und User-Verlauf")
+        render_audience_timeline(viewer_df, height=290)
+        st.caption("Die blaue Linie zeigt die bekannte Zuschauerzahl aus dem Live-Eventstrom. Die grüne Linie zeigt, wie viele Accounts im gleichen Zeitfenster sichtbar aktiv waren.")
+
         st.subheader("Viewer Dynamics & Risk Radar")
         vd1, vd2 = st.columns([1.2, 1])
         with vd1:
@@ -4079,6 +4892,17 @@ def main():
             render_risk_radar(risk_radar_df, height=280)
         with st.expander("Viewer Dynamics erklärt", expanded=False):
             render_glossary(["Viewer Count", "Lurker Ratio", "Viewer Drop", "Zeit-Korrelation", "Conversion"])
+
+        wi1, wi2 = st.columns([1.05, 1])
+        with wi1:
+            st.subheader("Wirkungsökonomie-Indizes")
+            render_wirkung_indices(indices_df, height=230)
+        with wi2:
+            st.subheader("Host Copilot")
+            if not host_copilot_df.empty:
+                display_table(host_copilot_df, height=230)
+            else:
+                st.info("Noch keine Copilot-Hinweise.")
 
         st.subheader("Beziehungs- und Aufmerksamkeitsmuster")
         n1, n2 = st.columns(2)
@@ -4186,6 +5010,7 @@ def main():
                     safe_username = html.escape(str(row["username"]))
                     safe_text = html.escape(str(row["text"]))
                     ts = row["dt"].strftime("%H:%M:%S") if pd.notna(row["dt"]) else "--:--:--"
+                    user_href = f"?board={urllib.parse.quote(str(board_id))}&user={urllib.parse.quote(str(row['username']))}"
                     influence_info = influence_lookup.get(str(row["username"]), {})
                     influence_score = influence_info.get("influence_score")
                     if influence_score is not None:
@@ -4198,18 +5023,11 @@ def main():
                     with avatar_col:
                         render_avatar(str(row["username"]), row.get("avatar_url"), size=42)
                     with content_col:
-                        if st.button(
-                            str(row["username"]),
-                            key=f"user_profile_from_chat_{row_idx}_{str(row['timestamp']).replace(':', '').replace(' ', '_')}",
-                            help="Userprofil öffnen",
-                        ):
-                            st.session_state["selected_user_profile"] = str(row["username"])
-                            st.rerun()
                         st.markdown(
                             f"""
                             <div class="chat-item {heat_class}">
                                 <div class="chat-main">
-                                    <span style="color:{username_col}; font-weight:700;">{safe_username}</span>: {safe_text}
+                                    <a href="{user_href}" target="_self" style="color:{username_col}; font-weight:700; text-decoration:none;">{safe_username}</a>: {safe_text}
                                 </div>
                                 <div style="margin-top:.25rem;">{badge_html}</div>
                                 <div class="chat-meta">{ts}</div>
@@ -4266,6 +5084,7 @@ def main():
                     st.caption(f"Gesamt-Zuschauer im Eventstrom: {viewer_state['total_viewer_count']}")
             else:
                 st.caption("Noch keine Viewer-Count-Info empfangen.")
+            render_audience_timeline(viewer_df, height=220)
             if not joiners_df.empty:
                 st.caption("Neue sichtbare Beitritte")
                 for _, join_row in joiners_df.head(5).iterrows():
@@ -4416,6 +5235,15 @@ def main():
                     display_table(support_df.head(20), height=280)
             else:
                 st.info("Noch keine Supporter-Signale verfügbar.")
+
+            st.subheader("Power Index")
+            render_power_index(power_df, height=270)
+
+            st.subheader("Community Detection")
+            if not communities_df.empty:
+                display_table(communities_df.head(12), height=240)
+            else:
+                st.info("Noch keine klaren User-Cluster erkannt.")
 
         user_options = sorted(comment_df["username"].dropna().unique().tolist()) if not comment_df.empty else []
         selected_user = st.selectbox("User-Detail", [""] + user_options)
@@ -4568,6 +5396,17 @@ def main():
                 ]
                 display_table(event_show[[c for c in display_cols if c in event_show.columns]].tail(60), height=310)
 
+            cf1, cf2 = st.columns([1.05, 1])
+            with cf1:
+                st.subheader("Viewer Conversion Flow")
+                render_conversion_flow(conversion_flow_df, height=300)
+            with cf2:
+                st.subheader("Supporter Lifecycle")
+                if not supporter_lifecycle_df.empty:
+                    display_table(supporter_lifecycle_df.head(20), height=300)
+                else:
+                    st.info("Noch kein Supporter-Lifecycle verfügbar.")
+
             bottom1, bottom2 = st.columns(2)
             with bottom1:
                 st.subheader("Top-Supporter")
@@ -4579,6 +5418,20 @@ def main():
                 else:
                     st.info("Noch keine Geschenkarten erfasst.")
 
+            rev1, rev2 = st.columns([1.05, 1])
+            with rev1:
+                st.subheader("Revenue Trigger Detection")
+                if not revenue_df.empty:
+                    display_table(revenue_df.head(15), height=280)
+                else:
+                    st.info("Noch keine monetären Trigger-Signale erkannt.")
+            with rev2:
+                st.subheader("Gift Business Intelligence")
+                if not gift_users_df.empty:
+                    display_table(gift_users_df.head(15), height=280)
+                else:
+                    st.info("Noch keine Gift-Intelligence verfügbar.")
+
             st.subheader("Drop-/Spike- und Korrelationssignale", help=GLOSSARY["Zeit-Korrelation"])
             c_left, c_right = st.columns([1.1, 1])
             with c_left:
@@ -4588,6 +5441,16 @@ def main():
                     display_table(correlation_df.head(15), height=300)
                 else:
                     st.info("Noch keine auffälligen Korrelationsfenster.")
+
+            st.subheader("Event-Korrelation Engine")
+            ec1, ec2 = st.columns([1.1, 1])
+            with ec1:
+                render_event_correlation_engine(correlation_engine_df, height=300)
+            with ec2:
+                if not correlation_engine_df.empty:
+                    display_table(correlation_engine_df.head(15), height=300)
+                else:
+                    st.info("Noch keine belastbaren Lag-Muster erkannt.")
 
     with tab_analysis:
         upper_left, upper_right = st.columns(2)
@@ -4646,6 +5509,14 @@ def main():
             else:
                 st.info("Noch keine Drift-Auswertung verfügbar.")
 
+            st.subheader("Live Narrative Timeline")
+            render_narrative_timeline(narrative_timeline_df, height=250)
+            if not narrative_timeline_df.empty:
+                with st.expander("Narrative Timeline als Tabelle", expanded=False):
+                    timeline_show = narrative_timeline_df.copy()
+                    timeline_show["bucket"] = pd.to_datetime(timeline_show["bucket"]).dt.strftime("%H:%M")
+                    display_table(timeline_show.tail(20), height=250)
+
             st.subheader("Trigger-Wirkung", help=GLOSSARY["Trigger-Rate"])
             if not trigger_df.empty:
                 render_trigger_impact(trigger_df, height=280)
@@ -4665,7 +5536,7 @@ def main():
                 st.info("Noch keine Archetypen bestimmbar.")
 
         st.subheader("Vertiefung")
-        dt1, dt2, dt3, dt4 = st.tabs(["Kritische Momente", "Dominanz & Fairness", "Trigger & Archetypen", "Zeit-Korrelationen"])
+        dt1, dt2, dt3, dt4, dt5, dt6 = st.tabs(["Kritische Momente", "Dominanz & Fairness", "Trigger & Archetypen", "Zeit-Korrelationen", "Netzwerk & Macht", "Plattform-Level"])
         with dt1:
             if not critical_df.empty:
                 chart_df = critical_df.copy()
@@ -4677,6 +5548,11 @@ def main():
                     display_table(chart_show.tail(20))
             else:
                 st.info("Noch keine Zeitfenster-Daten für kritische Momente.")
+            st.subheader("Critical Moments Detection")
+            if not critical_brief_df.empty:
+                display_table(critical_brief_df.head(12), height=240)
+            else:
+                st.info("Noch keine kritischen Momente für die Kurzansicht.")
             with st.expander("Kritische Momente erklärt", expanded=False):
                 render_glossary(["Kritische Momente", "Eskalations-Score", "Trigger-Rate", "Abwertungsquote", "Dominanz"])
         with dt2:
@@ -4711,11 +5587,56 @@ def main():
                 render_temporal_correlations(correlation_df, height=330)
             with z2:
                 render_risk_radar(risk_radar_df, height=330)
+            st.subheader("Lag-Analyse / Event-Korrelation Engine")
+            if not correlation_engine_df.empty:
+                display_table(correlation_engine_df.head(18), height=260)
+            else:
+                st.info("Noch keine belastbaren Korrelationen erkannt.")
             if not viewer_df.empty:
                 with st.expander("Viewer-Dynamics-Tabelle", expanded=False):
                     display_table(viewer_df.tail(40), height=360)
             with st.expander("Zeit-Korrelationen erklärt", expanded=False):
                 render_glossary(["Zeit-Korrelation", "Viewer Drop", "Lurker Ratio", "Conversion"])
+        with dt5:
+            n1, n2 = st.columns([1.05, 1])
+            with n1:
+                st.subheader("Influencer Graph 2.0")
+                if not graph2_edges_df.empty:
+                    display_table(graph2_edges_df.head(20), height=280)
+                else:
+                    st.info("Noch kein gerichteter Graph verfügbar.")
+            with n2:
+                st.subheader("Power Index")
+                render_power_index(power_df, height=280)
+            st.subheader("Community Detection")
+            if not communities_df.empty:
+                display_table(communities_df.head(15), height=220)
+            else:
+                st.info("Noch keine Community-Strukturen erkannt.")
+            st.subheader("Narrative Push Detection")
+            if not push_df.empty:
+                display_table(push_df.head(20), height=240)
+            else:
+                st.info("Noch keine verdichteten Push-Signale.")
+        with dt6:
+            p1, p2 = st.columns(2)
+            with p1:
+                st.subheader("Cross-Live Tracking")
+                if not cross_live_df.empty:
+                    display_table(cross_live_df.head(20), height=250)
+                else:
+                    st.info("Noch keine Accounts in mehreren Lives erkannt.")
+            with p2:
+                st.subheader("Creator Benchmarking")
+                if not creator_benchmark_df.empty:
+                    display_table(creator_benchmark_df.head(20), height=250)
+                else:
+                    st.info("Noch keine Multi-Board-Vergleiche verfügbar.")
+            st.subheader("Global Narrative Tracking")
+            if not global_narratives_df.empty:
+                display_table(global_narratives_df.head(20), height=220)
+            else:
+                st.info("Noch keine boardübergreifenden Narrative verfügbar.")
 
         with st.expander("Alert-Protokoll", expanded=False):
             log_df = alert_log(alerts, critical_df, correlation_df)
@@ -4781,8 +5702,13 @@ def main():
                 viewer_df,
                 risk_radar_df,
                 correlation_df,
+                correlation_engine_df,
                 support_df,
                 influence_df,
+                narrative_timeline_df,
+                power_df,
+                indices_df,
+                revenue_df,
             ),
             file_name=f"tiktok-live-report-{board_id}.html",
             mime="text/html",
