@@ -348,48 +348,74 @@ def format_relative_age(ts_value) -> str:
     return f"vor {days} Tag(en)"
 
 
+_DB_LOCK = threading.RLock()
+
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=20)
     conn.row_factory = sqlite3.Row
+    # PRAGMAs are connection-scoped for journal_mode; setting once on init is enough,
+    # but we still keep WAL safe defaults here for new connections.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error:
+        pass
     return conn
 
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL")
-    cur.execute("PRAGMA synchronous=NORMAL")
-    cur.execute("PRAGMA temp_store=MEMORY")
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS boards (
-            board_id TEXT PRIMARY KEY,
-            host_username TEXT,
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            status TEXT NOT NULL DEFAULT 'idle',
-            report_text TEXT DEFAULT ''
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            board_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            type TEXT NOT NULL,
-            username TEXT NOT NULL,
-            text TEXT NOT NULL,
-            avatar_url TEXT,
-            metadata TEXT,
-            FOREIGN KEY (board_id) REFERENCES boards(board_id)
-        )
-    """)
-    cur.execute("PRAGMA table_info(messages)")
-    existing_cols = {row[1] for row in cur.fetchall()}
-    if "metadata" not in existing_cols:
-        cur.execute("ALTER TABLE messages ADD COLUMN metadata TEXT")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_id_id ON messages(board_id, id)")
-    conn.commit()
-    conn.close()
+    with _DB_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA temp_store=MEMORY")
+        cur.execute("PRAGMA cache_size=-20000")  # ~20MB page cache
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS boards (
+                board_id TEXT PRIMARY KEY,
+                host_username TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                status TEXT NOT NULL DEFAULT 'idle',
+                report_text TEXT DEFAULT ''
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                type TEXT NOT NULL,
+                username TEXT NOT NULL,
+                text TEXT NOT NULL,
+                avatar_url TEXT,
+                metadata TEXT,
+                FOREIGN KEY (board_id) REFERENCES boards(board_id)
+            )
+        """)
+        cur.execute("PRAGMA table_info(messages)")
+        existing_cols = {row[1] for row in cur.fetchall()}
+        if "metadata" not in existing_cols:
+            cur.execute("ALTER TABLE messages ADD COLUMN metadata TEXT")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_id_id ON messages(board_id, id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_type ON messages(board_id, type)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_board_user ON messages(board_id, username)")
+        # Custom-Alerts (neue Funktion in V3)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS custom_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                threshold INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (board_id) REFERENCES boards(board_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_board ON custom_alerts(board_id)")
+        conn.commit()
+        conn.close()
 
 
 def latest_message_id(board_id: str) -> int:
@@ -438,24 +464,102 @@ def insert_message(board_id: str, payload: dict):
         metadata_text = metadata
     else:
         metadata_text = json.dumps(metadata, ensure_ascii=False, default=str) if metadata else None
+    with _DB_LOCK:
+        conn = get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO messages(board_id, timestamp, type, username, text, avatar_url, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    board_id,
+                    payload["timestamp"],
+                    payload["type"],
+                    payload["username"],
+                    payload["text"],
+                    payload.get("avatar_url"),
+                    metadata_text,
+                )
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Custom Alerts (V3 Feature)
+# ---------------------------------------------------------------------------
+def list_custom_alerts(board_id: str) -> list[dict]:
+    if not board_id:
+        return []
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO messages(board_id, timestamp, type, username, text, avatar_url, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            board_id,
-            payload["timestamp"],
-            payload["type"],
-            payload["username"],
-            payload["text"],
-            payload.get("avatar_url"),
-            metadata_text,
-        )
-    )
-    conn.commit()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT id, label, keyword, threshold, created_at FROM custom_alerts WHERE board_id=? ORDER BY id DESC",
+            (board_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_custom_alert(board_id: str, label: str, keyword: str, threshold: int = 1) -> bool:
+    label = (label or "").strip()
+    keyword = (keyword or "").strip()
+    if not board_id or not label or not keyword:
+        return False
+    threshold = max(1, int(threshold or 1))
+    with _DB_LOCK:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO custom_alerts(board_id, label, keyword, threshold, created_at) VALUES (?, ?, ?, ?, ?)",
+                (board_id, label, keyword.lower(), threshold, now_ts()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return True
+
+
+def delete_custom_alert(alert_id: int) -> None:
+    with _DB_LOCK:
+        conn = get_conn()
+        try:
+            conn.execute("DELETE FROM custom_alerts WHERE id=?", (int(alert_id),))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def evaluate_custom_alerts(comment_df: pd.DataFrame, alerts: list[dict]) -> list[dict]:
+    """Pure-pandas Auswertung von Custom Alerts auf dem comment-DataFrame."""
+    if comment_df is None or comment_df.empty or not alerts:
+        return []
+    try:
+        text_lower = comment_df["text"].astype(str).str.lower()
+    except Exception:
+        return []
+    fired = []
+    for alert in alerts:
+        kw = str(alert.get("keyword", "")).lower().strip()
+        if not kw:
+            continue
+        threshold = int(alert.get("threshold", 1) or 1)
+        matches = text_lower.str.contains(re.escape(kw), na=False)
+        count = int(matches.sum())
+        if count >= threshold:
+            sample_users = comment_df.loc[matches, "username"].dropna().astype(str).head(5).tolist()
+            fired.append({
+                "id": alert.get("id"),
+                "label": alert.get("label"),
+                "keyword": kw,
+                "threshold": threshold,
+                "count": count,
+                "users": sample_users,
+            })
+    return fired
 
 
 @st.cache_data(ttl=2, show_spinner=False)
@@ -754,28 +858,55 @@ def clean_message_store(messages):
 @st.cache_data(ttl=8, show_spinner=False)
 def build_dataframe(messages) -> pd.DataFrame:
     messages = clean_message_store(messages)
+    columns = [
+        "timestamp", "username", "text", "type", "avatar_url", "metadata", "is_question",
+        "has_trigger", "has_toxic_marker", "has_caps", "has_link", "emoji_count",
+        "word_count", "tone", "dt", "minute"
+    ]
     if not messages:
-        return pd.DataFrame(columns=[
-            "timestamp", "username", "text", "type", "avatar_url", "is_question",
-            "has_trigger", "has_toxic_marker", "has_caps", "has_link", "emoji_count",
-            "word_count", "tone", "dt", "minute"
-        ])
-    rows = []
-    for row in messages:
-        base = {
-            "timestamp": row["timestamp"],
-            "username": row["username"],
-            "text": row["text"],
-            "type": row["type"],
-            "avatar_url": row.get("avatar_url"),
-            "metadata": row.get("metadata", {}),
-        }
-        base.update(classify_message(row["text"]))
-        rows.append(base)
-    df = pd.DataFrame(rows)
+        return pd.DataFrame(columns=columns)
+
+    df = pd.DataFrame(messages)
+    # sicherstellen, dass alle Basis-Spalten existieren
+    for col in ["timestamp", "username", "text", "type"]:
+        if col not in df.columns:
+            df[col] = ""
+    if "avatar_url" not in df.columns:
+        df["avatar_url"] = None
+    if "metadata" not in df.columns:
+        df["metadata"] = [{} for _ in range(len(df))]
+
+    text_series = df["text"].astype(str)
+    lowered = text_series.str.lower()
+
+    # vektorisierte Feature-Erkennung statt Row-Loop
+    trigger_pattern = "|".join(re.escape(k) for k in TRIGGER_KEYWORDS)
+    toxic_pattern = "|".join(re.escape(k) for k in TOXIC_MARKERS)
+    question_pattern = "|".join(re.escape(k) for k in QUESTION_BAIT_MARKERS)
+
+    df["has_trigger"] = lowered.str.contains(trigger_pattern, na=False) if trigger_pattern else False
+    df["has_toxic_marker"] = lowered.str.contains(toxic_pattern, na=False) if toxic_pattern else False
+    has_question_mark = text_series.str.contains("?", na=False, regex=False)
+    has_question_marker = lowered.str.contains(question_pattern, na=False) if question_pattern else False
+    df["is_question"] = has_question_mark | has_question_marker
+    df["has_caps"] = text_series.str.contains(UPPER_PATTERN, na=False)
+    df["has_link"] = lowered.str.contains("http://|https://|www\\.", na=False, regex=True)
+    df["emoji_count"] = text_series.apply(lambda t: len(extract_emojis(t)))
+    df["word_count"] = text_series.str.split().str.len().fillna(0).astype(int)
+
+    tone = pd.Series("neutral", index=df.index, dtype="object")
+    tone = tone.mask(df["is_question"], "fragend")
+    tone = tone.mask(df["has_trigger"], "polarisierend")
+    tone = tone.mask(df["has_toxic_marker"], "abwertend")
+    df["tone"] = tone
+
     df["dt"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df["minute"] = df["dt"].dt.floor("min")
-    return df
+    # Spaltenreihenfolge stabilisieren
+    for col in columns:
+        if col not in df.columns:
+            df[col] = None
+    return df[columns]
 
 
 def get_event_messages(messages):
@@ -1828,6 +1959,163 @@ def metric_snapshot(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_
         "flagged_ratio": flagged_ratio,
         "severe_ratio": severe_ratio,
     }
+
+
+# ---------------------------------------------------------------------------
+# V3 Helpers: Volltext-Suche und einfache Sentiment-Prognose
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=8, show_spinner=False)
+def search_chat_messages(comment_df: pd.DataFrame, query: str, limit: int = 50) -> pd.DataFrame:
+    """Volltextsuche in Chatkommentaren mit Highlighting-fähiger Tabelle."""
+    if comment_df is None or comment_df.empty:
+        return pd.DataFrame(columns=["timestamp", "username", "text", "tone"])
+    q = (query or "").strip().lower()
+    if not q:
+        return pd.DataFrame(columns=["timestamp", "username", "text", "tone"])
+    text = comment_df["text"].astype(str)
+    user = comment_df["username"].astype(str)
+    mask = text.str.lower().str.contains(re.escape(q), na=False) | user.str.lower().str.contains(re.escape(q), na=False)
+    found = comment_df.loc[mask, ["timestamp", "username", "text", "tone"]].copy()
+    found = found.sort_values("timestamp", ascending=False).head(int(limit)).reset_index(drop=True)
+    return found
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def sentiment_forecast(comment_df: pd.DataFrame, horizon_minutes: int = 5) -> pd.DataFrame:
+    """Einfache lineare Trend-Schätzung des Tonhaushalts (Trigger/Toxic-Anteil) für die nächsten Minuten."""
+    cols = ["minute", "trigger_share", "toxic_share", "forecast"]
+    if comment_df is None or comment_df.empty or "minute" not in comment_df.columns:
+        return pd.DataFrame(columns=cols)
+    df = comment_df.dropna(subset=["minute"]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    grouped = (
+        df.groupby("minute")
+        .agg(messages=("text", "count"),
+             trigger=("has_trigger", "sum"),
+             toxic=("has_toxic_marker", "sum"))
+        .reset_index()
+    )
+    grouped["trigger_share"] = grouped["trigger"] / grouped["messages"].replace(0, 1)
+    grouped["toxic_share"] = grouped["toxic"] / grouped["messages"].replace(0, 1)
+    grouped["forecast"] = False
+    if len(grouped) < 3:
+        return grouped[cols]
+    # einfache lineare Regression auf den letzten 10 Buckets via numpy.polyfit
+    import numpy as _np
+    tail = grouped.tail(10).reset_index(drop=True)
+    x = _np.arange(len(tail), dtype=float)
+
+    def _fit(y: _np.ndarray) -> tuple[float, float]:
+        try:
+            if len(y) < 2 or _np.allclose(y, y[0]):
+                return 0.0, float(y.mean()) if len(y) else 0.0
+            slope, intercept = _np.polyfit(x, y, 1)
+            return float(slope), float(intercept)
+        except Exception:
+            return 0.0, float(y.mean()) if len(y) else 0.0
+
+    m_t, b_t = _fit(tail["trigger_share"].to_numpy(dtype=float))
+    m_x, b_x = _fit(tail["toxic_share"].to_numpy(dtype=float))
+
+    last_minute = grouped["minute"].max()
+    rows = []
+    for step in range(1, int(horizon_minutes) + 1):
+        idx = len(tail) - 1 + step
+        rows.append({
+            "minute": last_minute + pd.Timedelta(minutes=step),
+            "messages": float("nan"),
+            "trigger": float("nan"),
+            "toxic": float("nan"),
+            "trigger_share": max(0.0, min(1.0, m_t * idx + b_t)),
+            "toxic_share": max(0.0, min(1.0, m_x * idx + b_x)),
+            "forecast": True,
+        })
+    forecast_df = pd.DataFrame(rows)
+    out = pd.concat([grouped, forecast_df], ignore_index=True)
+    return out[cols]
+
+
+def moderator_priorities(
+    comment_df: pd.DataFrame,
+    scores_df: pd.DataFrame,
+    risk_df: pd.DataFrame,
+    correlation_df: pd.DataFrame,
+) -> list[dict]:
+    """Verdichtet die wichtigsten Moderationshinweise zu einem priorisierten Action-Board."""
+    items: list[dict] = []
+    try:
+        if scores_df is not None and not scores_df.empty and "shift_score" in scores_df.columns:
+            top = scores_df.sort_values("shift_score", ascending=False).head(3)
+            for _, row in top.iterrows():
+                if float(row.get("shift_score", 0)) <= 0:
+                    continue
+                items.append({
+                    "prio": "Hoch" if float(row["shift_score"]) > 6 else "Mittel",
+                    "titel": f"Account beobachten: {row.get('username', '?')}",
+                    "detail": f"Shift-Score {row['shift_score']:.1f} - hohe Aktivität, evtl. Trigger oder Wiederholungen.",
+                    "typ": "account",
+                })
+    except Exception:
+        pass
+    try:
+        if risk_df is not None and not risk_df.empty:
+            high = risk_df.copy()
+            for col in ("risk_score", "score", "value"):
+                if col in high.columns:
+                    high = high.sort_values(col, ascending=False).head(2)
+                    break
+            for _, row in high.iterrows():
+                title = str(row.get("signal") or row.get("name") or "Risiko-Signal")
+                detail = str(row.get("detail") or row.get("description") or "Erhöhter Risiko-Wert erkannt.")
+                items.append({
+                    "prio": "Hoch",
+                    "titel": f"Risiko: {title}",
+                    "detail": detail,
+                    "typ": "risiko",
+                })
+    except Exception:
+        pass
+    try:
+        if correlation_df is not None and not correlation_df.empty:
+            for _, row in correlation_df.head(2).iterrows():
+                title = str(row.get("signal") or row.get("event") or "Korrelation")
+                detail = str(row.get("detail") or row.get("description") or "Auffälliger zeitlicher Zusammenhang.")
+                items.append({
+                    "prio": "Mittel",
+                    "titel": f"Trend: {title}",
+                    "detail": detail,
+                    "typ": "trend",
+                })
+    except Exception:
+        pass
+    if not items and comment_df is not None and not comment_df.empty:
+        recent = comment_df.tail(20)
+        if not recent.empty:
+            tox = float(recent["has_toxic_marker"].mean()) if "has_toxic_marker" in recent.columns else 0.0
+            trg = float(recent["has_trigger"].mean()) if "has_trigger" in recent.columns else 0.0
+            if tox > 0.1:
+                items.append({
+                    "prio": "Mittel",
+                    "titel": "Tonalität verschlechtert sich",
+                    "detail": f"In den letzten 20 Nachrichten {tox*100:.0f}% mit abwertenden Markern.",
+                    "typ": "ton",
+                })
+            elif trg > 0.2:
+                items.append({
+                    "prio": "Niedrig",
+                    "titel": "Triggerquote leicht erhöht",
+                    "detail": f"{trg*100:.0f}% der jüngsten Nachrichten enthalten Trigger-Begriffe.",
+                    "typ": "trigger",
+                })
+    if not items:
+        items.append({
+            "prio": "Info",
+            "titel": "Aktuell keine akuten Hinweise",
+            "detail": "Diskurs wirkt stabil. Du kannst auf Dialog und Einordnung setzen.",
+            "typ": "ok",
+        })
+    return items
 
 
 def explain_impact_scores(comment_df: pd.DataFrame, scores_df: pd.DataFrame, clusters_df: pd.DataFrame, impact: dict) -> dict:
@@ -4015,6 +4303,150 @@ def render_risk_radar(risk_df: pd.DataFrame, height: int = 260):
     st.altair_chart(chart, use_container_width=True)
 
 
+# ---------------------------------------------------------------------------
+# V3 Render-Komponenten: Forecast, Moderator-Cockpit, Suche, Alerts
+# ---------------------------------------------------------------------------
+def render_sentiment_forecast(forecast_df: pd.DataFrame, height: int = 260) -> None:
+    if forecast_df is None or forecast_df.empty:
+        st.info("Noch zu wenig Daten für eine Tonalitäts-Prognose.")
+        return
+    df = forecast_df.copy()
+    if "forecast" not in df.columns:
+        df["forecast"] = False
+    df["phase"] = df["forecast"].map({True: "Prognose", False: "Beobachtet"})
+    long = df.melt(
+        id_vars=["minute", "phase", "forecast"],
+        value_vars=["trigger_share", "toxic_share"],
+        var_name="signal",
+        value_name="anteil",
+    )
+    long["signal"] = long["signal"].map({
+        "trigger_share": "Trigger-Anteil",
+        "toxic_share": "Abwertung-Anteil",
+    })
+    chart = (
+        alt.Chart(long)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("minute:T", title="Zeit"),
+            y=alt.Y("anteil:Q", axis=alt.Axis(format="%"), title="Anteil"),
+            color=alt.Color("signal:N", title="Signal"),
+            strokeDash=alt.StrokeDash("phase:N", title="Phase"),
+            tooltip=["minute:T", "signal:N", alt.Tooltip("anteil:Q", format=".1%"), "phase:N"],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        "Lineare Trend-Schätzung der letzten 10 Minuten - dient als Frühwarnung, nicht als Vorhersage."
+    )
+
+
+def render_moderator_cockpit(items: list[dict]) -> None:
+    if not items:
+        st.info("Keine priorisierten Hinweise vorhanden.")
+        return
+    prio_color = {
+        "Hoch": "#ef4444",
+        "Mittel": "#f59e0b",
+        "Niedrig": "#3b82f6",
+        "Info": "#10b981",
+    }
+    icons = {
+        "account": "👤",
+        "risiko": "⚠️",
+        "trend": "📈",
+        "ton": "🗣️",
+        "trigger": "🔥",
+        "ok": "✅",
+    }
+    for item in items:
+        color = prio_color.get(item.get("prio"), "#64748b")
+        icon = icons.get(item.get("typ"), "•")
+        st.markdown(
+            f"""
+            <div class='alert-card' style='border-left:5px solid {color};'>
+                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:.25rem;'>
+                    <strong>{icon} {html.escape(str(item.get('titel','')))}</strong>
+                    <span class='pill' style='background:{color}22;border-color:{color}66;color:{color};'>{html.escape(str(item.get('prio','')))}</span>
+                </div>
+                <div class='muted'>{html.escape(str(item.get('detail','')))}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_chat_search(comment_df: pd.DataFrame, key_prefix: str = "search") -> None:
+    query = st.text_input(
+        "Volltext-Suche im Chatverlauf",
+        key=f"{key_prefix}_input",
+        placeholder="Begriff, Username oder Phrase eingeben",
+        help="Sucht im Text und Username der Kommentare. Treffer werden absteigend nach Zeit angezeigt.",
+    )
+    if not query:
+        return
+    found = search_chat_messages(comment_df, query, limit=80)
+    if found.empty:
+        st.warning("Keine Treffer.")
+        return
+    st.caption(f"{len(found)} Treffer (max. 80 angezeigt).")
+    display_table(found, hide_index=True, use_container_width=True)
+
+
+def render_alert_builder(board_id: str, comment_df: pd.DataFrame) -> None:
+    if not board_id:
+        st.info("Erst einen Analyse-Raum wählen, dann lassen sich Alerts definieren.")
+        return
+    st.markdown("#### 🔔 Eigene Alerts")
+    st.caption(
+        "Definiere Schlüsselwörter, ab wie vielen Treffern ein Alarm erscheint. "
+        "Alerts werden im Hintergrund auf den aktuell geladenen Kommentaren ausgewertet."
+    )
+    with st.form(f"alert_form_{board_id}", clear_on_submit=True):
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            label = st.text_input("Bezeichnung", placeholder="z. B. Eskalationsbegriff")
+        with col2:
+            keyword = st.text_input("Schlüsselwort/Phrase", placeholder="z. B. lügenpresse")
+        with col3:
+            threshold = st.number_input("Treffer ab", min_value=1, max_value=999, value=3, step=1)
+        submitted = st.form_submit_button("Alert speichern", use_container_width=True)
+        if submitted:
+            if add_custom_alert(board_id, label, keyword, int(threshold)):
+                st.success("Alert gespeichert.")
+                st.rerun()
+            else:
+                st.error("Bitte Bezeichnung und Schlüsselwort angeben.")
+
+    alerts = list_custom_alerts(board_id)
+    if not alerts:
+        st.info("Noch keine eigenen Alerts angelegt.")
+        return
+    fired = evaluate_custom_alerts(comment_df, alerts) if comment_df is not None and not comment_df.empty else []
+    fired_by_id = {f.get("id"): f for f in fired}
+
+    for alert in alerts:
+        a_id = alert["id"]
+        info = fired_by_id.get(a_id)
+        with st.container():
+            cols = st.columns([3, 2, 1, 1])
+            cols[0].markdown(f"**{html.escape(alert['label'])}** - `{html.escape(alert['keyword'])}`")
+            cols[1].markdown(f"Schwelle: {alert['threshold']}")
+            if info:
+                cols[2].markdown(
+                    f"<span class='pill pill-trigger'>⚠️ {info['count']} Treffer</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                cols[2].markdown("<span class='pill'>still</span>", unsafe_allow_html=True)
+            if cols[3].button("Löschen", key=f"del_alert_{a_id}", use_container_width=True):
+                delete_custom_alert(a_id)
+                st.rerun()
+            if info and info.get("users"):
+                st.caption("Beispiel-Accounts: " + ", ".join(info["users"]))
+
+
 def render_word_cloud(words_df: pd.DataFrame, height: int = 260):
     if words_df is None or words_df.empty:
         st.info("Noch keine Begriffe für eine Wortwolke.")
@@ -5721,6 +6153,7 @@ def main():
     valid_main_tabs = [
         "Lagebild",
         "Live-Monitor",
+        "🛡️ Moderation & Alerts",
         "👥 Community",
         "User-Insights",
         "🎁 Events & Support",
@@ -6342,7 +6775,7 @@ def main():
     st.session_state["last_query_tab"] = selected_main_tab
     explain_mode = bool(st.session_state.get("impact_explain_mode", False))
     influence_lookup = {}
-    if selected_main_tab in {"Live-Monitor", "👥 Community", "User-Insights", "🎁 Events & Support", "Diskurs-Analyse", "Export & KI"}:
+    if selected_main_tab in {"Live-Monitor", "🛡️ Moderation & Alerts", "👥 Community", "User-Insights", "🎁 Events & Support", "Diskurs-Analyse", "Export & KI"}:
         influence_df = get_influence_df()
         influence_lookup = influence_df.set_index("username").to_dict("index") if not influence_df.empty else {}
 
@@ -6788,6 +7221,43 @@ def main():
                 st.info("Noch keine Zeitreihe vorhanden.")
             st.info(salience_warning(comment_df, scores_df), icon="ℹ️")
             st.markdown('</div>', unsafe_allow_html=True)
+
+    if selected_main_tab == "🛡️ Moderation & Alerts":
+        st.subheader("Moderation & Alerts")
+        st.caption(
+            "Priorisierte Hinweise, Kurzprognose der Tonalität, Volltextsuche im Chat und eigene Keyword-Alerts."
+        )
+        try:
+            scores_df_mod = get_scores_df()
+        except Exception:
+            scores_df_mod = pd.DataFrame()
+        try:
+            risk_df_mod = get_risk_df() if "get_risk_df" in globals() else pd.DataFrame()
+        except Exception:
+            risk_df_mod = pd.DataFrame()
+        try:
+            correlation_df_mod = get_correlation_df() if "get_correlation_df" in globals() else pd.DataFrame()
+        except Exception:
+            correlation_df_mod = pd.DataFrame()
+
+        cockpit_col, forecast_col = st.columns([1, 1])
+        with cockpit_col:
+            st.markdown("#### 🎯 Moderator-Cockpit")
+            st.caption("Heuristisch priorisierte Aktionen für die nächsten 5 Minuten.")
+            items = moderator_priorities(comment_df, scores_df_mod, risk_df_mod, correlation_df_mod)
+            render_moderator_cockpit(items)
+        with forecast_col:
+            st.markdown("#### 🔮 Tonalitäts-Prognose")
+            forecast_df = sentiment_forecast(comment_df, horizon_minutes=5)
+            render_sentiment_forecast(forecast_df, height=260)
+
+        st.divider()
+        search_col, alerts_col = st.columns([1, 1])
+        with search_col:
+            st.markdown("#### 🔍 Volltext-Suche")
+            render_chat_search(comment_df, key_prefix=f"search_{board_id or 'na'}")
+        with alerts_col:
+            render_alert_builder(board_id, comment_df)
 
     if selected_main_tab == "👥 Community":
         scores_df = get_scores_df()
